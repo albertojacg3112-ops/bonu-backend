@@ -33,7 +33,7 @@ app.get('/api/status', (req, res) => {
 });
 
 // ✅ NUEVA: Ruta para importar productos CJ (placeholder)
-app.post('/api/cj/import', (req, res) => {
+app.all('/api/cj/import', (req, res) => {
   res.json({ success: true, message: 'Producto importado (modo prueba)' });
 });
 
