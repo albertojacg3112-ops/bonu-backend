@@ -1,97 +1,57 @@
-// ✅ bonu-backend/index.js - Express + Railway Compatible
-// Railway ejecuta: node index.js
-
+// ✅ bonu-backend/index.js - Express 4.x + Railway Compatible
 require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
 
-// ✅ CORS: Permitir todas las conexiones (Firebase, localhost, etc.)
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
+// ✅ IMPORTANTE: Usar process.env.PORT sin valor por defecto en Railway
+const PORT = process.env.PORT;
 
-// ✅ JSON parser
+// CORS para permitir conexiones desde Firebase y otros orígenes
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }));
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// ✅ Logging simple
+// Logging
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// ✅ Ruta raíz - Health check para Railway
+// ✅ Rutas esenciales
 app.get('/', (req, res) => {
-  console.log('✅ Request a / recibido');
-  res.status(200).json({
-    success: true,
-    message: 'Bonü Backend - Railway OK 🎉',
-    port: PORT,
-    env: {
-      CJ_API_KEY: !!process.env.CJ_API_KEY,
-      NODE_ENV: process.env.NODE_ENV || 'development'
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ✅ Health check endpoint (requerido por algunos proxies)
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', uptime: process.uptime() });
-});
-
-// ✅ API status
-app.get('/api/status', (req, res) => {
   res.json({
     success: true,
-    message: 'Bonü Backend activo',
+    message: 'Bonü Backend OK',
+    port: PORT,
     timestamp: new Date().toISOString()
   });
 });
 
-// ✅ Catch-all para rutas no encontradas (404 JSON, no HTML)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+app.get('/api/status', (req, res) => {
+  res.json({ success: true, message: 'Backend activo' });
+});
+
+// 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Ruta no encontrada',
-    path: req.url
-  });
+  res.status(404).json({ error: 'Not found', path: req.url });
 });
 
-// ✅ Manejo de errores global
+// Error handler
 app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.message);
-  res.status(500).json({
-    success: false,
-    message: 'Error interno del servidor'
-  });
+  console.error('Error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
-// ✅ Iniciar servidor - CRUCIAL: 0.0.0.0 para Railway
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Bonü Backend corriendo en ${PORT}`);
-  console.log(`✅ Health check: https://blissful-respect-production-99ff.up.railway.app/health`);
+// ✅ Iniciar servidor - SIN especificar host, Railway lo maneja
+app.listen(PORT, () => {
+  console.log(`🚀 Server ready on port ${PORT}`);
 });
 
-// ✅ Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('🛑 SIGTERM - Cerrando servidor...');
-  server.close(() => {
-    console.log('✅ Servidor cerrado');
-    process.exit(0);
-  });
-});
-
-// ✅ Prevenir crash por errores no manejados
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Unhandled Rejection:', reason);
-});
+// ✅ Mantener el proceso vivo (evita que Node.js termine)
+process.stdin.resume();
