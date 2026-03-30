@@ -1,63 +1,53 @@
-// ✅ bonu-backend/index.js - Railway Compatible (0.0.0.0 + Strict PORT)
+// ✅ bonu-backend/index.js - Railway Final Fix
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 
 const app = express();
-
-// ✅ Railway proporciona PORT, sin fallback en producción
 const PORT = process.env.PORT;
 
 if (!PORT) {
-  console.error('❌ FATAL: PORT environment variable is not set!');
+  console.error('❌ PORT not set');
   process.exit(1);
 }
 
-console.log('=== 🚀 BONÜ BACKEND STARTING ===');
-console.log(`📦 PORT: "${PORT}"`);
-console.log(`🔑 CJ_API_KEY: ${!!process.env.CJ_API_KEY ? 'loaded' : 'MISSING'}`);
-console.log('=================================');
+// ✅ Timeouts para evitar que Railway cierre la conexión prematuramente
+const KEEP_ALIVE = 65000;
+const HEADERS_TIMEOUT = 66000;
 
 // CORS + JSON
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }));
 app.use(express.json());
 
-// Logging
-app.use((req, res, next) => {
-  console.log(`📥 ${req.method} ${req.url}`);
-  next();
+// ✅ Health check endpoint (Railway lo usa para verificar que está vivo)
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy', port: PORT, time: Date.now() });
 });
 
-// ✅ Rutas esenciales
+// ✅ Root endpoint
 app.get('/', (req, res) => {
-  console.log('✅ Root hit');
   res.json({ success: true, message: 'Bonü Backend OK 🎉', port: PORT });
 });
 
-app.get('/health', (req, res) => {
-  console.log('✅ Health hit');
-  res.status(200).json({ status: 'ok', port: PORT });
-});
-
-// 404
+// Catch-all
 app.use((req, res) => {
-  res.status(404).json({ error: 'Not found', path: req.url });
+  res.status(404).json({ error: 'Not found' });
 });
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('❌ Error:', err.message);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-// ✅ CRUCIAL: Escuchar en 0.0.0.0 para que Railway pueda conectar
+// ✅ Iniciar servidor con 0.0.0.0
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ SERVER LISTENING on 0.0.0.0:${PORT}`);
+  console.log(`✅ Listening on 0.0.0.0:${PORT}`);
 });
 
-// Mantener proceso vivo
-process.stdin.resume();
+// ✅ Configurar timeouts (CRUCIAL para Railway)
+server.keepAliveTimeout = KEEP_ALIVE;
+server.headersTimeout = HEADERS_TIMEOUT;
+
+// ✅ Mantener proceso vivo indefinidamente
+setInterval(() => {
+  // Heartbeat para evitar que el contenedor se duerma
+  console.log(`💓 Heartbeat - port ${PORT}`);
+}, 30000);
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
