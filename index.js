@@ -1,4 +1,4 @@
-// ✅ bonu-backend/index.js - Render Compatible
+// ✅ bonu-backend/index.js - Render Compatible (CJ Fix)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -27,14 +27,37 @@ app.get('/', (req, res) => {
   res.json({ success: true, message: 'Bonü Backend OK 🎉', port: PORT });
 });
 
-// ✅ NUEVA: Ruta /api/status
+// ✅ /api/status - para que el frontend verifique conexión
 app.get('/api/status', (req, res) => {
   res.json({ success: true, message: 'Backend activo' });
 });
 
-// ✅ NUEVA: Ruta para importar productos CJ (placeholder)
-app.all('/api/cj/import', (req, res) => {
-  res.json({ success: true, message: 'Producto importado (modo prueba)' });
+// ✅ /api/cj/import - FIX: devuelve estructura completa que espera el frontend
+app.post('/api/cj/import', (req, res) => {
+  const { sku, precioVenta, costoCJ, tipo } = req.body;
+  
+  // Mock response con estructura EXACTA que espera buscarProductoCJ()
+  res.json({ 
+    success: true, 
+    message: 'Producto importado',
+    product: {
+      id: sku || 'test-' + Date.now(),
+      nombre: 'Producto de Prueba CJ',
+      descripcion: 'Descripción temporal - reemplazar con datos reales',
+      categoria: tipo || 'Ofertas',
+      precio: precioVenta || 299,
+      precioVenta: precioVenta || 299,
+      stock: 100,
+      tallas: 'S,M,L,XL',
+      colores: 'Negro,Blanco,Rojo',
+      medidas: '30x20x10 cm',
+      cjData: {
+        imagenes: ['https://via.placeholder.com/400x400?text=CJ+Product'],
+        rating: 4.5,
+        reviews: 120
+      }
+    }
+  });
 });
 
 // Catch-all 404
@@ -60,5 +83,3 @@ process.on('SIGTERM', () => {
   console.log('🛑 Closing...');
   server.close(() => process.exit(0));
 });
-
-// v2 - force redeploy
