@@ -52,7 +52,7 @@ app.post('/api/cj/import', (req, res) => {
       colores: 'Negro,Blanco,Rojo',
       medidas: '30x20x10 cm',
       cjData: {
-        imagenes: ['https://via.placeholder.com/400x400?text=CJ+Product'],
+        imagenes: [],  // ← Vacío para que el frontend busque en CJ real
         rating: 4.5,
         reviews: 120
       }
