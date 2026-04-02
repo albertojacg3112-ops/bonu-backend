@@ -93,7 +93,7 @@ app.post('/api/cj/buscar', async (req, res) => {
     console.log(`🔍 Buscando SKU: ${sku}`);
     try {
         const token = await getCJToken();
-        const response = await fetch(`${CJ_API_URL}/product/list?sku=${sku}&pageNum=1&pageSize=1`, {
+        const response = await fetch(`${CJ_API_URL}/product/list?productSku=${sku}&pageNum=1&pageSize=1`, {
             method: 'GET',
             headers: { 'CJ-Access-Token': token, 'Content-Type': 'application/json' }
         });
@@ -126,7 +126,7 @@ app.post('/api/cj/import', async (req, res) => {
     console.log(`📦 IMPORTANDO SKU: ${sku}`);
     try {
         const token = await getCJToken();
-        const listResponse = await fetch(`${CJ_API_URL}/product/list?sku=${sku}&pageNum=1&pageSize=1`, {
+        const listResponse = await fetch(`${CJ_API_URL}/product/list?productSku=${sku}&pageNum=1&pageSize=1`, {
             method: 'GET',
             headers: { 'CJ-Access-Token': token, 'Content-Type': 'application/json' }
         });
