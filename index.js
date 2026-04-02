@@ -1,4 +1,4 @@
-// ✅ bonu-backend/index.js - VERSIÓN PRODUCCIÓN FINAL
+// ✅ bonu-backend/index.js - VERSIÓN PRODUCCIÓN COMPLETA
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -6,7 +6,6 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Configuración CJ
 const CJ_API_KEY = process.env.CJ_API_KEY || "CJ5275460@api@99b7fedd9f9848399316d534df3ee8ca";
 const CJ_BASE64 = process.env.CJ_BASE64_AUTH || "Ym9udS5tYXJrZXRwbGFjZUBnbWFpbC5jb206Q0o1Mjc1NDYwQGFwaUA5OWI3ZmVkZDlmOTg0ODM5OTMxNmQ1MzRkZjNlZThjYQ==";
 const CJ_API_URL = "https://developers.cjdropshipping.com/api2.0";
@@ -14,29 +13,29 @@ const CJ_API_URL = "https://developers.cjdropshipping.com/api2.0";
 app.use(cors());
 app.use(express.json());
 
-// ============ ENDPOINTS DE SALUD ============
+// ============ ENDPOINTS BÁSICOS ============
+app.get('/', (req, res) => {
+    res.json({ success: true, message: 'Bonü Backend Activo', port: PORT });
+});
+
 app.get('/health', (req, res) => {
     res.json({ status: 'healthy', port: PORT, time: Date.now() });
 });
 
-app.get('/', (req, res) => {
-    res.json({ success: true, message: 'Bonü Backend Activo - Producción', port: PORT });
-});
-
 app.get('/api/status', (req, res) => {
-    res.json({ success: true, cjConfigured: true });
+    res.json({ success: true, cjConfigured: true, timestamp: Date.now() });
 });
 
 app.get('/api/cj/test', (req, res) => {
-    res.json({ success: true, message: 'Endpoint CJ funcionando' });
+    res.json({ success: true, message: 'Endpoint CJ funcionando correctamente' });
 });
 
-// ============ NUEVO ENDPOINT: OBTENER TODOS SUS PRODUCTOS ============
+// ============ ENDPOINT: OBTENER TODOS LOS PRODUCTOS DE CJ ============
 app.get('/api/cj/mis-productos', async (req, res) => {
     console.log('📦 Obteniendo lista de productos de CJ...');
     
     try {
-        const response = await fetch(`${CJ_API_URL}/product/listed`, {
+        const response = await fetch(`${CJ_API_URL}/product/list`, {
             method: 'POST',
             headers: {
                 'api-key': CJ_API_KEY,
@@ -55,6 +54,7 @@ app.get('/api/cj/mis-productos', async (req, res) => {
                 sku: p.sku,
                 nombre: p.productName,
                 precio: p.price,
+                stock: p.stock,
                 imagenes: p.imageList?.map(img => img.imageUrl) || []
             }));
             
@@ -68,93 +68,153 @@ app.get('/api/cj/mis-productos', async (req, res) => {
     }
 });
 
-// ============ ENDPOINT PRINCIPAL: IMPORTAR PRODUCTO ============
-app.post('/api/cj/import', async (req, res) => {
-    const { sku, precioVenta, costoCJ, tipo } = req.body;
+// ============ ENDPOINT: BUSCAR PRODUCTO POR SKU ============
+app.post('/api/cj/buscar', async (req, res) => {
+    const { sku } = req.body;
     
-    console.log(`📦 IMPORTANDO SKU: ${sku}`);
+    console.log(`🔍 Buscando SKU: ${sku}`);
     
     if (!sku) {
         return res.status(400).json({ success: false, error: 'SKU requerido' });
     }
     
     try {
-        // PASO 1: Buscar el producto por SKU en la lista del usuario
-        const listResponse = await fetch(`${CJ_API_URL}/product/listed`, {
+        const response = await fetch(`${CJ_API_URL}/product/list`, {
             method: 'POST',
             headers: {
                 'api-key': CJ_API_KEY,
                 'authorization': CJ_BASE64,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ page: 1, pageSize: 200 })
+            body: JSON.stringify({ sku, page: 1, pageSize: 1 })
+        });
+        
+        const data = await response.json();
+        
+        if (data.code === 0 && data.data?.list?.length > 0) {
+            const producto = data.data.list[0];
+            res.json({
+                success: true,
+                product: {
+                    pid: producto.pid,
+                    sku: producto.sku,
+                    nombre: producto.productName,
+                    descripcion: producto.description || '',
+                    categoria: producto.categoryName || 'General',
+                    precio: producto.price,
+                    stock: producto.stock || 100,
+                    imagenes: producto.imageList?.map(img => img.imageUrl) || []
+                }
+            });
+        } else {
+            throw new Error(`Producto ${sku} no encontrado`);
+        }
+    } catch (error) {
+        console.error('❌ Error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============ ENDPOINT PRINCIPAL: IMPORTAR PRODUCTO ============
+app.post('/api/cj/import', async (req, res) => {
+    const { sku, precioVenta, costoCJ, tipo } = req.body;
+    
+    console.log(`📦 IMPORTANDO SKU: ${sku}`);
+    console.log(`💰 Precio venta: ${precioVenta}, Costo CJ: ${costoCJ}`);
+    
+    if (!sku) {
+        return res.status(400).json({ success: false, error: 'SKU requerido' });
+    }
+    
+    try {
+        // Buscar el producto por SKU
+        const listResponse = await fetch(`${CJ_API_URL}/product/list`, {
+            method: 'POST',
+            headers: {
+                'api-key': CJ_API_KEY,
+                'authorization': CJ_BASE64,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ sku, page: 1, pageSize: 1 })
         });
         
         const listData = await listResponse.json();
         
-        if (listData.code !== 0 || !listData.data?.list) {
-            throw new Error('No se pudo obtener la lista de productos');
+        if (listData.code !== 0 || !listData.data?.list?.length) {
+            throw new Error(`Producto con SKU ${sku} no encontrado en CJ`);
         }
         
-        // Buscar el producto por SKU
-        const productoEncontrado = listData.data.list.find(p => p.sku === sku);
+        const producto = listData.data.list[0];
+        console.log(`✅ Producto encontrado: ${producto.productName}`);
         
-        if (!productoEncontrado) {
-            throw new Error(`Producto con SKU ${sku} no encontrado en su lista de CJ`);
-        }
-        
-        const pid = productoEncontrado.pid;
-        console.log(`✅ Producto encontrado. PID: ${pid}`);
-        
-        // PASO 2: Obtener detalles completos del producto
-        const detailResponse = await fetch(`${CJ_API_URL}/product/detail`, {
-            method: 'POST',
-            headers: {
-                'api-key': CJ_API_KEY,
-                'authorization': CJ_BASE64,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ pid })
-        });
-        
-        const detailData = await detailResponse.json();
-        
+        // Obtener imágenes detalladas
         let imagenes = [];
-        if (detailData.code === 0 && detailData.data) {
-            if (detailData.data.productImageList) {
-                imagenes = detailData.data.productImageList.map(img => img.imageUrl || img.url);
-            } else if (detailData.data.imageList) {
-                imagenes = detailData.data.imageList.map(img => img.imageUrl || img.url);
+        try {
+            const detailResponse = await fetch(`${CJ_API_URL}/product/detail`, {
+                method: 'POST',
+                headers: {
+                    'api-key': CJ_API_KEY,
+                    'authorization': CJ_BASE64,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ pid: producto.pid })
+            });
+            
+            const detailData = await detailResponse.json();
+            
+            if (detailData.code === 0 && detailData.data) {
+                if (detailData.data.productImageList) {
+                    imagenes = detailData.data.productImageList.map(img => img.imageUrl || img.url);
+                } else if (detailData.data.imageList) {
+                    imagenes = detailData.data.imageList.map(img => img.imageUrl || img.url);
+                }
             }
+        } catch (imgError) {
+            console.log('⚠️ Error obteniendo imágenes detalladas, usando imágenes básicas');
         }
         
-        if (imagenes.length === 0 && productoEncontrado.imageList) {
-            imagenes = productoEncontrado.imageList.map(img => img.imageUrl || img.url);
+        // Si no hay imágenes, usar las básicas del listado
+        if (imagenes.length === 0 && producto.imageList) {
+            imagenes = producto.imageList.map(img => img.imageUrl || img.url);
         }
         
+        // Si sigue sin imágenes, usar placeholder
         if (imagenes.length === 0) {
             imagenes = ['https://picsum.photos/500/500?random=1'];
         }
+        
+        // Calcular descuento
+        const descuento = Math.floor(Math.random() * 20) + 5;
+        const precioOriginal = parseFloat(precioVenta) / (1 - descuento / 100);
         
         // Respuesta exitosa
         res.json({
             success: true,
             message: 'Producto importado correctamente',
             product: {
-                id: pid,
+                id: producto.pid,
                 sku: sku,
-                nombre: productoEncontrado.productName || `Producto ${sku}`,
-                descripcion: productoEncontrado.description || detailData.data?.description || 'Sin descripción',
-                categoria: productoEncontrado.categoryName || detailData.data?.categoryName || 'General',
-                precio: parseFloat(precioVenta) || 299,
-                precioVenta: parseFloat(precioVenta) || 299,
+                nombre: producto.productName || `Producto ${sku}`,
+                descripcion: producto.description || 'Sin descripción disponible',
+                categoria: producto.categoryName || 'General',
+                precioOriginal: Math.round(precioOriginal),
+                precioFinal: parseFloat(precioVenta),
+                precio: parseFloat(precioVenta),
+                precioVenta: parseFloat(precioVenta),
                 costoCJ: parseFloat(costoCJ) || 0,
-                stock: productoEncontrado.stock || 100,
-                tallas: productoEncontrado.sizes?.join(', ') || '',
-                colores: productoEncontrado.colors?.join(', ') || '',
-                medidas: productoEncontrado.dimensions || '',
+                descuento: descuento,
+                stock: producto.stock || 100,
+                tallas: producto.sizes?.join(', ') || producto.sizeList?.join(', ') || '',
+                colores: producto.colors?.join(', ') || producto.colorList?.join(', ') || '',
+                medidas: producto.dimensions || producto.size || '',
                 tipo: tipo || 'Ofertas',
-                imagenes: imagenes
+                rating: 4,
+                imagenes: imagenes,
+                cjData: {
+                    pid: producto.pid,
+                    sku: sku,
+                    imagenes: imagenes
+                }
             }
         });
         
@@ -164,17 +224,55 @@ app.post('/api/cj/import', async (req, res) => {
     }
 });
 
-// 404
+// ============ ENDPOINT: OBTENER DETALLES DE PRODUCTO POR PID ============
+app.post('/api/cj/detalle', async (req, res) => {
+    const { pid } = req.body;
+    
+    if (!pid) {
+        return res.status(400).json({ success: false, error: 'PID requerido' });
+    }
+    
+    try {
+        const response = await fetch(`${CJ_API_URL}/product/detail`, {
+            method: 'POST',
+            headers: {
+                'api-key': CJ_API_KEY,
+                'authorization': CJ_BASE64,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ pid })
+        });
+        
+        const data = await response.json();
+        
+        if (data.code === 0 && data.data) {
+            res.json({ success: true, product: data.data });
+        } else {
+            throw new Error(data.msg || 'Producto no encontrado');
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============ MANEJADOR 404 ============
 app.use((req, res) => {
     res.status(404).json({ error: 'Endpoint no encontrado' });
 });
 
-// Iniciar servidor
+// ============ INICIAR SERVIDOR ============
 app.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
     console.log('✅ Bonü Backend LISTO PARA PRODUCCIÓN');
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🔐 CJ API: CONFIGURADA`);
     console.log(`🌐 URL: https://bonu-backend.onrender.com`);
+    console.log('==================================================');
+    console.log('📋 ENDPOINTS DISPONIBLES:');
+    console.log('   GET  /api/cj/test');
+    console.log('   GET  /api/cj/mis-productos');
+    console.log('   POST /api/cj/buscar');
+    console.log('   POST /api/cj/import');
+    console.log('   POST /api/cj/detalle');
     console.log('==================================================');
 });
