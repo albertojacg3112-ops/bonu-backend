@@ -47,7 +47,7 @@ app.get('/api/cj/mis-productos', async (req, res) => {
         
         const data = await response.json();
         console.log(`📡 CJ Respondió: code=${data.code}`);
-        
+        console.log('📡 Respuesta completa CJ:', JSON.stringify(data));
         if (data.code === 0 && data.data?.list) {
             const productos = data.data.list.map(p => ({
                 pid: p.pid,
