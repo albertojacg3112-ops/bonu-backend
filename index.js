@@ -121,8 +121,9 @@ app.post('/api/cj/buscar', async (req, res) => {
 });
 
 app.post('/api/cj/import', async (req, res) => {
-    const { sku, precioVenta, costoCJ, tipo } = req.body;
+    let { sku, precioVenta, costoCJ, tipo } = req.body;
     if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
+    sku = sku.split('-')[0];
     console.log(`📦 IMPORTANDO SKU: ${sku}`);
     try {
         const token = await getCJToken();
