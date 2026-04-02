@@ -59,17 +59,24 @@ app.get('/api/cj/mis-productos', async (req, res) => {
             method: 'GET',
             headers: { 'CJ-Access-Token': token, 'Content-Type': 'application/json' }
         });
-        const data = await response.json();
+       const data = await response.json();
         console.log(`📡 CJ code=${data.code}, msg=${data.message}`);
         if (data.code === 200 && data.data?.list) {
-            const productos = data.data.list.map(p => ({
-                pid: p.pid,
-                sku: p.sku,
-                nombre: p.productName,
-                precio: p.sellPrice,
-                stock: p.inventory,
-                imagenes: p.productImage ? [p.productImage] : []
-            }));
+            const productos = data.data.list.map(p => {
+                let nombre = p.productName || 'Sin nombre';
+                try {
+                    const parsed = JSON.parse(nombre);
+                    if (Array.isArray(parsed)) nombre = parsed[0];
+                } catch(e) {}
+                return {
+                    pid: p.pid,
+                    sku: p.sku || p.pid,
+                    nombre: nombre,
+                    precio: p.sellPrice || p.price,
+                    stock: p.inventory || 100,
+                    imagenes: p.productImage ? [p.productImage] : []
+                };
+            });
             res.json({ success: true, total: productos.length, productos });
         } else {
             res.json({ success: false, code: data.code, msg: data.message, raw: data });
