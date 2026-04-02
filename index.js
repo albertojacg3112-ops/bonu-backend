@@ -162,8 +162,8 @@ app.post('/api/cj/import', async (req, res) => {
             product: {
                 id: producto.pid,
                 sku: sku,
-                nombre: producto.productName || `Producto ${sku}`,
-                descripcion: producto.productName || 'Sin descripción disponible',
+                nombre: producto.productNameEn || producto.productName || `Producto ${sku}`,
+                descripcion: producto.productNameEn || producto.productName || 'Sin descripción disponible',
                 categoria: producto.categoryName || 'General',
                 precioOriginal: Math.round(precioOriginal),
                 precioFinal: parseFloat(precioVenta),
