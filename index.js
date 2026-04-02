@@ -62,12 +62,11 @@ app.get('/api/cj/mis-productos', async (req, res) => {
         } else {
             throw new Error(data.msg || 'Error al obtener productos');
         }
-    } catch (error) {
-        console.error('❌ Error:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+} catch (error) {
+        console.error('❌ Error completo:', error);
+        res.status(500).json({ success: false, error: error.message, stack: error.stack });
     }
 });
-
 // ============ ENDPOINT: BUSCAR PRODUCTO POR SKU ============
 app.post('/api/cj/buscar', async (req, res) => {
     const { sku } = req.body;
