@@ -18,17 +18,15 @@ if (!CJ_API_KEY || !CJ_BASE64) {
     process.exit(1);
 }
 
-// ============ CORS - TOTALMENTE ABIERTO PARA FUNCIONAR CON FIREBASE ============
+// ============ CORS - TOTALMENTE ABIERTO ============
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-Requested-With']
 }));
 
-// Responder a OPTIONS preflight
 app.options('*', cors());
 
-// Middleware adicional para asegurar CORS
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -88,13 +86,10 @@ app.post('/api/cj/import', async (req, res) => {
             return res.status(404).json({ success: false, error: 'Producto no encontrado en CJ' });
         }
         
-        // Obtener todas las imágenes detalladas
+        // Obtener imágenes
         const imagenes = await obtenerImagenesDetalladasCJ(productData.pid || productData.id);
         
-        // Obtener información adicional del producto
-        const productDetail = await obtenerDetallesCompletosCJ(productData.pid || productData.id);
-        
-        // Estructura COMPLETA para el frontend
+        // Estructura para el frontend
         const productResponse = {
             success: true,
             message: 'Producto importado correctamente',
@@ -108,28 +103,21 @@ app.post('/api/cj/import', async (req, res) => {
                 precioVenta: parseFloat(precioVenta) || 299,
                 costoCJ: parseFloat(costoCJ) || 0,
                 stock: productData.stock || 100,
-                tallas: obtenerTallasCompletas(productDetail, productData),
-                colores: obtenerColoresCompletos(productDetail, productData),
+                tallas: productData.sizes?.join(', ') || productData.sizeList?.join(', ') || 'Única',
+                colores: productData.colors?.join(', ') || productData.colorList?.join(', ') || 'Único',
                 medidas: productData.dimensions || productData.size || '',
-                peso: productData.weight || productDetail?.data?.weight || '',
                 tipo: tipo || 'Ofertas',
                 imagenes: imagenes,
-                video: productDetail?.data?.productVideo || '',
-                variantes: productDetail?.data?.skuList || [],
                 cjData: {
                     pid: productData.pid || productData.id,
                     sku: sku,
-                    rating: productData.rating || productDetail?.data?.rating || 4.5,
-                    reviews: productData.reviews || productDetail?.data?.reviews || 0,
-                    soldCount: productData.soldCount || productDetail?.data?.soldCount || 0,
-                    imagenes: imagenes,
-                    url: `https://www.cjdropshipping.com/products/${productData.pid || productData.id}.html`
+                    imagenes: imagenes
                 }
             }
         };
         
         console.log(`✅ Producto importado: ${productResponse.product.nombre}`);
-        console.log(`📸 Imágenes obtenidas: ${imagenes.length}`);
+        console.log(`📸 Imágenes: ${imagenes.length}`);
         
         res.json(productResponse);
         
@@ -154,25 +142,13 @@ async function buscarProductoEnCJ(sku) {
                 'authorization': CJ_BASE64,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ sku, page: 1, pageSize: 5 })
+            body: JSON.stringify({ sku, page: 1, pageSize: 1 })
         });
         
         const data = await response.json();
         console.log(`📡 Respuesta CJ list: código ${data.code}`);
         
         if (data.code === 0 && data.data?.list?.length > 0) {
-            // Buscar el producto exacto por SKU
-            const exactProduct = data.data.list.find(p => 
-                p.sku === sku || 
-                p.productSku === sku ||
-                p.pid?.toString() === sku
-            );
-            
-            if (exactProduct) {
-                return exactProduct;
-            }
-            
-            // Si no encuentra exacto, devolver el primero
             return data.data.list[0];
         }
         
@@ -184,8 +160,8 @@ async function buscarProductoEnCJ(sku) {
     }
 }
 
-// ============ FUNCIÓN: OBTENER DETALLES COMPLETOS DEL PRODUCTO ============
-async function obtenerDetallesCompletosCJ(pid) {
+// ============ FUNCIÓN: OBTENER IMÁGENES DETALLADAS ============
+async function obtenerImagenesDetalladasCJ(pid) {
     try {
         const response = await fetch(`${CJ_API_URL}/product/detail`, {
             method: 'POST',
@@ -198,125 +174,20 @@ async function obtenerDetallesCompletosCJ(pid) {
         });
         
         const data = await response.json();
-        console.log(`📡 Respuesta CJ detail: código ${data.code}`);
         
-        if (data.code === 0 && data.data) {
-            return data;
+        if (data.code === 0 && data.data?.productImageList?.length) {
+            return data.data.productImageList.map(img => img.imageUrl);
         }
         
-        return null;
-        
-    } catch (error) {
-        console.error('Error obteniendo detalles:', error.message);
-        return null;
-    }
-}
-
-// ============ FUNCIÓN: OBTENER IMÁGENES DETALLADAS ============
-async function obtenerImagenesDetalladasCJ(pid) {
-    try {
-        const detail = await obtenerDetallesCompletosCJ(pid);
-        
-        if (detail && detail.data) {
-            // Intentar diferentes formatos de imágenes
-            const imagenes = [];
-            
-            // Formato 1: productImageList
-            if (detail.data.productImageList?.length) {
-                detail.data.productImageList.forEach(img => {
-                    if (img.imageUrl) imagenes.push(img.imageUrl);
-                });
-            }
-            
-            // Formato 2: imageList
-            if (detail.data.imageList?.length) {
-                detail.data.imageList.forEach(img => {
-                    if (img.url) imagenes.push(img.url);
-                });
-            }
-            
-            // Formato 3: images
-            if (detail.data.images?.length) {
-                imagenes.push(...detail.data.images);
-            }
-            
-            // Formato 4: mainImage + subImages
-            if (detail.data.mainImage) {
-                imagenes.unshift(detail.data.mainImage);
-            }
-            
-            if (detail.data.subImages?.length) {
-                imagenes.push(...detail.data.subImages);
-            }
-            
-            // Limpiar duplicados y URLs vacías
-            const imagenesUnicas = [...new Set(imagenes.filter(img => img && img.startsWith('http')))];
-            
-            if (imagenesUnicas.length > 0) {
-                console.log(`📸 Encontradas ${imagenesUnicas.length} imágenes`);
-                return imagenesUnicas;
-            }
+        if (data.data?.imageList?.length) {
+            return data.data.imageList.map(img => img.url);
         }
         
-        // Imagen por defecto si no hay
-        console.log('⚠️ No se encontraron imágenes, usando placeholder');
-        return ['https://via.placeholder.com/800x800?text=Bonu+Producto'];
+        return ['https://via.placeholder.com/500?text=CJ+Producto'];
         
     } catch (error) {
         console.error('Error obteniendo imágenes:', error.message);
-        return ['https://via.placeholder.com/800x800?text=Bonu+Producto'];
-    }
-}
-
-// ============ FUNCIÓN: OBTENER TALLAS COMPLETAS ============
-function obtenerTallasCompletas(detail, productData) {
-    try {
-        // Intentar obtener tallas de diferentes fuentes
-        if (detail?.data?.sizeList?.length) {
-            return detail.data.sizeList.join(', ');
-        }
-        if (detail?.data?.sizes?.length) {
-            return detail.data.sizes.join(', ');
-        }
-        if (productData?.sizeList?.length) {
-            return productData.sizeList.join(', ');
-        }
-        if (productData?.sizes?.length) {
-            return productData.sizes.join(', ');
-        }
-        if (detail?.data?.skuList?.length) {
-            const tallasUnicas = [...new Set(detail.data.skuList.map(sku => sku.size).filter(s => s))];
-            if (tallasUnicas.length) return tallasUnicas.join(', ');
-        }
-        return 'Única';
-    } catch (e) {
-        return 'Única';
-    }
-}
-
-// ============ FUNCIÓN: OBTENER COLORES COMPLETOS ============
-function obtenerColoresCompletos(detail, productData) {
-    try {
-        // Intentar obtener colores de diferentes fuentes
-        if (detail?.data?.colorList?.length) {
-            return detail.data.colorList.join(', ');
-        }
-        if (detail?.data?.colors?.length) {
-            return detail.data.colors.join(', ');
-        }
-        if (productData?.colorList?.length) {
-            return productData.colorList.join(', ');
-        }
-        if (productData?.colors?.length) {
-            return productData.colors.join(', ');
-        }
-        if (detail?.data?.skuList?.length) {
-            const coloresUnicos = [...new Set(detail.data.skuList.map(sku => sku.color).filter(c => c))];
-            if (coloresUnicos.length) return coloresUnicos.join(', ');
-        }
-        return 'Único';
-    } catch (e) {
-        return 'Único';
+        return ['https://via.placeholder.com/500?text=Error+Imagen'];
     }
 }
 
@@ -325,36 +196,10 @@ app.post('/api/cj/test', async (req, res) => {
     const { sku } = req.body;
     try {
         const product = await buscarProductoEnCJ(sku);
-        const detail = await obtenerDetallesCompletosCJ(product.pid || product.id);
-        res.json({ 
-            success: true, 
-            product: product,
-            detail: detail?.data
-        });
+        res.json({ success: true, product });
     } catch (error) {
         res.status(404).json({ success: false, error: error.message });
     }
-});
-
-// ============ ENDPOINT PARA OBTENER PRODUCTO POR PID ============
-app.post('/api/cj/detail', async (req, res) => {
-    const { pid } = req.body;
-    try {
-        const detail = await obtenerDetallesCompletosCJ(pid);
-        res.json({ success: true, detail: detail?.data });
-    } catch (error) {
-        res.status(404).json({ success: false, error: error.message });
-    }
-});
-
-// ============ ENDPOINT PARA VERIFICAR CREDENCIALES ============
-app.get('/api/debug/cj-config', (req, res) => {
-    res.json({
-        hasApiKey: !!CJ_API_KEY,
-        hasBase64: !!CJ_BASE64,
-        apiKeyPrefix: CJ_API_KEY ? CJ_API_KEY.substring(0, 10) + '...' : null,
-        env: process.env.NODE_ENV
-    });
 });
 
 // ============ MANEJADOR 404 ============
@@ -383,16 +228,13 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('='.repeat(50));
 });
 
-// Configuración para mantener vivo en Render
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
 
-// Heartbeat cada 30 segundos
 setInterval(() => {
     console.log(`💓 Heartbeat - ${new Date().toISOString()}`);
 }, 30000);
 
-// Manejo de cierre graceful
 process.on('SIGTERM', () => {
     console.log('🛑 Recibida señal SIGTERM, cerrando servidor...');
     server.close(() => {
