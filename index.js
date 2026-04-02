@@ -6,8 +6,8 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const CJ_API_KEY = process.env.CJ_API_KEY || "CJ5275460@api@99b7fedd9f9848399316d534df3ee8ca";
-const CJ_BASE64 = process.env.CJ_BASE64_AUTH || "Ym9udS5tYXJrZXRwbGFjZUBnbWFpbC5jb206Q0o1Mjc1NDYwQGFwaUA5OWI3ZmVkZDlmOTg0ODM5OTMxNmQ1MzRkZjNlZThjYQ==";
+const CJ_API_KEY = process.env.CJ_API_KEY;
+const CJ_BASE64 = process.env.CJ_BASE64_AUTH;
 const CJ_API_URL = "https://developers.cjdropshipping.com/api2.0";
 
 app.use(cors());
