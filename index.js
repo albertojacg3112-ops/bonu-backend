@@ -33,7 +33,9 @@ app.get('/api/cj/test', (req, res) => {
 // ============ ENDPOINT: OBTENER TODOS LOS PRODUCTOS DE CJ ============
 app.get('/api/cj/mis-productos', async (req, res) => {
     console.log('📦 Obteniendo lista de productos de CJ...');
-    
+    console.log('🔑 API Key:', CJ_API_KEY ? `EXISTE (${CJ_API_KEY.substring(0,10)}...)` : 'UNDEFINED');
+    console.log('🔑 BASE64:', CJ_BASE64 ? 'EXISTE' : 'UNDEFINED');
+
     try {
         const response = await fetch(`${CJ_API_URL}/product/list`, {
             method: 'POST',
@@ -44,10 +46,13 @@ app.get('/api/cj/mis-productos', async (req, res) => {
             },
             body: JSON.stringify({ page: 1, pageSize: 100 })
         });
-        
-        const data = await response.json();
-        console.log(`📡 CJ Respondió: code=${data.code}`);
-        console.log('📡 Respuesta completa CJ:', JSON.stringify(data));
+
+        console.log('📡 HTTP Status:', response.status);
+        const text = await response.text();
+        console.log('📡 Respuesta raw CJ:', text.substring(0, 500));
+
+        const data = JSON.parse(text);
+
         if (data.code === 0 && data.data?.list) {
             const productos = data.data.list.map(p => ({
                 pid: p.pid,
@@ -57,16 +62,17 @@ app.get('/api/cj/mis-productos', async (req, res) => {
                 stock: p.stock,
                 imagenes: p.imageList?.map(img => img.imageUrl) || []
             }));
-            
             res.json({ success: true, total: productos.length, productos });
         } else {
-            throw new Error(data.msg || 'Error al obtener productos');
+            console.log('❌ CJ code:', data.code, 'msg:', data.msg);
+            res.json({ success: false, code: data.code, msg: data.msg, raw: data });
         }
-} catch (error) {
-        console.error('❌ Error completo:', error);
-        res.status(500).json({ success: false, error: error.message, stack: error.stack });
+    } catch (error) {
+        console.error('❌ Error completo:', error.message);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
+
 // ============ ENDPOINT: BUSCAR PRODUCTO POR SKU ============
 app.post('/api/cj/buscar', async (req, res) => {
     const { sku } = req.body;
@@ -126,7 +132,6 @@ app.post('/api/cj/import', async (req, res) => {
     }
     
     try {
-        // Buscar el producto por SKU
         const listResponse = await fetch(`${CJ_API_URL}/product/list`, {
             method: 'POST',
             headers: {
@@ -146,7 +151,6 @@ app.post('/api/cj/import', async (req, res) => {
         const producto = listData.data.list[0];
         console.log(`✅ Producto encontrado: ${producto.productName}`);
         
-        // Obtener imágenes detalladas
         let imagenes = [];
         try {
             const detailResponse = await fetch(`${CJ_API_URL}/product/detail`, {
@@ -172,21 +176,17 @@ app.post('/api/cj/import', async (req, res) => {
             console.log('⚠️ Error obteniendo imágenes detalladas, usando imágenes básicas');
         }
         
-        // Si no hay imágenes, usar las básicas del listado
         if (imagenes.length === 0 && producto.imageList) {
             imagenes = producto.imageList.map(img => img.imageUrl || img.url);
         }
         
-        // Si sigue sin imágenes, usar placeholder
         if (imagenes.length === 0) {
             imagenes = ['https://picsum.photos/500/500?random=1'];
         }
         
-        // Calcular descuento
         const descuento = Math.floor(Math.random() * 20) + 5;
         const precioOriginal = parseFloat(precioVenta) / (1 - descuento / 100);
         
-        // Respuesta exitosa
         res.json({
             success: true,
             message: 'Producto importado correctamente',
