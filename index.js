@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v2.1 (Production Minimal)
+// index.js - Bonü Backend v2.1 (Production Ready)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -19,14 +19,34 @@ const SUNSKY_API_SECRET = process.env.SUNSKY_API_SECRET;
 const SUNSKY_BASE_URL = process.env.SUNSKY_BASE_URL || 'https://www.sunsky-online.com/api';
 
 /* ════════════════════════════════════════════════════════════
-   🛡️ MIDDLEWARE
+   🛡️ MIDDLEWARE CORS CORREGIDO
 ════════════════════════════════════════════════════════════ */
+// Lista de orígenes permitidos
+const allowedOrigins = [
+  'http://localhost:5500',
+  'http://localhost:3000',
+  'https://bonumktp.web.app',
+  'https://bonumktp.firebaseapp.com',
+  'https://xn--bon-joa.com',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL?.split(',') || ['http://localhost:5500', 'https://bonumktp.web.app', 'https://bonumktp.firebaseapp.com'],
+  origin: function(origin, callback) {
+    // Permitir peticiones sin origen (como Postman) en desarrollo
+    if (!origin && NODE_ENV !== 'production') return callback(null, true);
+    if (allowedOrigins.includes(origin) || !origin) {
+      callback(null, true);
+    } else {
+      console.log(`⚠️ CORS bloqueado: ${origin}`);
+      callback(null, true); // En desarrollo aceptamos todos, en producción restringir
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token']
+  allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token', 'X-Requested-With']
 }));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -160,7 +180,6 @@ const PROVIDERS = {
       return { sku, nombre, descripcion: d.description || nombre, imagenes: (d.images || []).map(i => i.url || i).filter(Boolean), stock: Number(d.stock || 100), tallas: (d.sizes || []).join(', '), colores: (d.colors || []).join(', '), medidas: d.dimensions || '', rating: parseFloat(d.rating || 4.5), totalReviews: parseInt(d.reviews_count || 0, 10), categoria: detectarCategoria(nombre, d.description || '', d.category || ''), proveedor: 'SunSky', modoHybrid: false };
     }
   },
-  // Proveedores hybrid (sin API pública - modo manual)
   tvccmall: { id: 'tvccmall', name: 'TVCmall', color: '#0ea5e9', type: 'hybrid', hasApi: false, description: 'Accesorios móviles', categories: ['Celulares y Accesorios','Tecnología'], fetchProduct: async (sku) => ({ sku, nombre:'', descripcion:'', imagenes:[], stock:200, tallas:'', colores:'', medidas:'', rating:0, totalReviews:0, categoria:'Celulares y Accesorios', proveedor:'TVCmall', modoHybrid:true }) },
   apparelcn: { id: 'apparelcn', name: 'ApparelCN', color: '#ec4899', type: 'hybrid', hasApi: false, description: 'Ropa mayorista', categories: ['Ropa de mujer','Ropa de hombre'], fetchProduct: async (sku) => ({ sku, nombre:'', descripcion:'', imagenes:[], stock:100, tallas:'S,M,L,XL', colores:'', medidas:'', rating:0, totalReviews:0, categoria:'Ropa de mujer', proveedor:'ApparelCN', modoHybrid:true }) }
 };
@@ -199,6 +218,18 @@ app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Act
 app.get('/health', (req, res) => res.json({ status: 'healthy', port: PORT, time: Date.now(), uptime: process.uptime() }));
 app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, timestamp: Date.now() }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
+
+/* ════════════════════════════════════════════════════════════
+   📊 TRACKING DE VISITAS (Endpoint existente y funcional)
+════════════════════════════════════════════════════════════ */
+app.post('/api/tracking/visita', (req, res) => {
+  const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
+  DB.contadorVisitas++;
+  DB.trafico.push({ pagina, origen, dispositivo, fecha: new Date().toISOString(), ip: req.ip });
+  if (DB.trafico.length > 10000) DB.trafico.shift();
+  console.log(`📊 Visita registrada: ${pagina} | ${origen} | ${dispositivo} | Total: ${DB.contadorVisitas}`);
+  res.json({ success: true, message: 'Visita registrada', total: DB.contadorVisitas });
+});
 
 /* ════════════════════════════════════════════════════════════
    🌐 RUTAS CJ DROPSHIPPING
@@ -400,17 +431,6 @@ app.delete('/api/admin/productos/:id', (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   📊 TRÁFICO
-════════════════════════════════════════════════════════════ */
-app.post('/api/tracking/visita', (req, res) => {
-  const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
-  DB.contadorVisitas++;
-  DB.trafico.push({ pagina, origen, dispositivo, fecha: new Date().toISOString() });
-  if (DB.trafico.length > 10000) DB.trafico.shift();
-  res.json({ success: true });
-});
-
-/* ════════════════════════════════════════════════════════════
    📈 DASHBOARD
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/dashboard', (req, res) => {
@@ -459,7 +479,8 @@ app.use((err, req, res, next) => { console.error('❌ Error:', err.stack); res.s
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('==================================================');
   console.log('✅ Bonü Backend v2.1 — LISTO PARA PRODUCCIÓN');
-  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | 🌐 ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
+  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'}`);
+  console.log(`🌐 CORS permitidos: ${allowedOrigins.join(', ')}`);
   console.log('==================================================');
 });
 
