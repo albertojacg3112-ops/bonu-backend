@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v2.3 (Con Firebase Admin + SunSky)
+// index.js - Bonü Backend v2.4 (Con mejora de imágenes SunSky)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -231,12 +231,40 @@ const PROVIDERS = {
         const nombre = product.name || `Producto ${sku}`;
         const descripcion = product.description || nombre;
         
+        // ========== MEJORADA: OBTENER IMÁGENES ==========
         let imagenes = [];
-        if (product.picCount > 0) {
+        
+        // Método 1: Usar picCount (formato original)
+        if (product.picCount && product.picCount > 0) {
           for (let i = 1; i <= Math.min(product.picCount, 10); i++) {
             imagenes.push(`https://img.sunsky-online.com/images/product/${product.itemNo}/${i}.jpg`);
           }
         }
+        
+        // Método 2: Si hay campo images o imgList
+        if (product.images && Array.isArray(product.images) && product.images.length) {
+          imagenes = product.images.map(img => img.url || img).filter(Boolean);
+        }
+        
+        if (product.imgList && Array.isArray(product.imgList) && product.imgList.length) {
+          imagenes = product.imgList.map(img => img.url || img).filter(Boolean);
+        }
+        
+        // Método 3: Si hay campo mainImage o mainImg
+        if (product.mainImage) imagenes.push(product.mainImage);
+        if (product.mainImg) imagenes.push(product.mainImg);
+        
+        // Método 4: Si hay campo pictureUrl o picUrl
+        if (product.pictureUrl) imagenes.push(product.pictureUrl);
+        if (product.picUrl) imagenes.push(product.picUrl);
+        
+        // Método 5: Si no hay imágenes, usar placeholder
+        if (imagenes.length === 0) {
+          console.log(`⚠️ No se encontraron imágenes para ${sku}, usando placeholder`);
+          imagenes = [`https://picsum.photos/seed/${sku}/400/400`];
+        }
+        
+        console.log(`📸 Imágenes obtenidas para ${sku}: ${imagenes.length} imagen(es)`);
         
         let tallas = '', colores = '';
         if (product.modelList && product.modelList.length) {
@@ -254,7 +282,7 @@ const PROVIDERS = {
           sku: product.itemNo,
           nombre,
           descripcion,
-          imagenes: imagenes.length ? imagenes : ['https://picsum.photos/500/500?random=1'],
+          imagenes,
           stock: product.stock || 100,
           tallas,
           colores,
@@ -311,7 +339,7 @@ async function getCJToken() {
 /* ════════════════════════════════════════════════════════════
    🚦 RUTAS BASE
 ════════════════════════════════════════════════════════════ */
-app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.3.0', env: NODE_ENV }));
+app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.4.0', env: NODE_ENV }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', port: PORT, time: Date.now(), uptime: process.uptime() }));
 app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, firestoreConfigured: !!firestore, timestamp: Date.now() }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
@@ -674,7 +702,7 @@ app.use((err, req, res, next) => { console.error('❌ Error:', err.stack); res.s
 ════════════════════════════════════════════════════════════ */
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('==================================================');
-  console.log('✅ Bonü Backend v2.3 — CON FIREBASE ADMIN + SUNSKY');
+  console.log('✅ Bonü Backend v2.4 — CON FIREBASE ADMIN + SUNSKY (IMÁGENES MEJORADAS)');
   console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | ☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '⚠️'} | 🔥 Firestore: ${firestore ? '✅' : '⚠️'}`);
   console.log(`🌐 CORS permitidos: ${allowedOrigins.join(', ')}`);
   console.log('==================================================');
