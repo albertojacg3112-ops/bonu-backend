@@ -1,12 +1,40 @@
-// index.js - Bonü Backend v2.2 (Con SunSky API implementada)
+// index.js - Bonü Backend v2.3 (Con Firebase Admin + SunSky)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const admin = require('firebase-admin');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
+
+/* ════════════════════════════════════════════════════════════
+   🔥 FIREBASE ADMIN SDK (para guardar en Firestore)
+════════════════════════════════════════════════════════════ */
+// Inicializar Firebase Admin solo si no está ya inicializado
+if (!admin.apps.length) {
+    try {
+        // Intentar inicializar con credenciales desde variables de entorno (Render)
+        if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+            admin.initializeApp({
+                credential: admin.credential.cert({
+                    projectId: process.env.FIREBASE_PROJECT_ID,
+                    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+                    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+                })
+            });
+            console.log('✅ Firebase Admin inicializado con variables de entorno');
+        } else {
+            // Fallback: intentar con archivo de credenciales local (solo desarrollo)
+            console.warn('⚠️ No se encontraron credenciales de Firebase Admin en variables de entorno');
+            console.warn('⚠️ Los productos importados NO se guardarán en Firestore');
+        }
+    } catch (error) {
+        console.error('❌ Error inicializando Firebase Admin:', error.message);
+    }
+}
+const firestore = admin.apps.length ? admin.firestore() : null;
 
 /* ════════════════════════════════════════════════════════════
    🔐 VARIABLES DE ENTORNO
@@ -283,9 +311,9 @@ async function getCJToken() {
 /* ════════════════════════════════════════════════════════════
    🚦 RUTAS BASE
 ════════════════════════════════════════════════════════════ */
-app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.2.0', env: NODE_ENV }));
+app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.3.0', env: NODE_ENV }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', port: PORT, time: Date.now(), uptime: process.uptime() }));
-app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, timestamp: Date.now() }));
+app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, firestoreConfigured: !!firestore, timestamp: Date.now() }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
 
 /* ════════════════════════════════════════════════════════════
@@ -358,6 +386,17 @@ app.post('/api/cj/import', async (req, res) => {
       fechaCreacion: new Date().toISOString()
     };
     DB.productos.push(productoFinal);
+    
+    // Guardar en Firestore si está disponible
+    if (firestore) {
+      try {
+        await firestore.collection('productos').add(productoFinal);
+        console.log(`✅ Producto CJ guardado en Firestore: ${nombre}`);
+      } catch (firestoreError) {
+        console.error('❌ Error guardando en Firestore:', firestoreError.message);
+      }
+    }
+    
     res.json({ success: true, message: 'Producto importado', product: productoFinal });
   } catch (error) { console.error('❌ Error:', error.message); res.status(500).json({ success: false, error: error.message }); }
 });
@@ -430,6 +469,19 @@ app.post('/api/sunsky/import', async (req, res) => {
       fechaCreacion: new Date().toISOString()
     };
     DB.productos.push(productoFinal);
+    
+    // ⭐ GUARDAR EN FIRESTORE (la parte importante)
+    if (firestore) {
+      try {
+        const docRef = await firestore.collection('productos').add(productoFinal);
+        console.log(`✅ Producto SunSky guardado en Firestore con ID: ${docRef.id} - ${product.nombre}`);
+      } catch (firestoreError) {
+        console.error('❌ Error guardando en Firestore:', firestoreError.message);
+      }
+    } else {
+      console.warn('⚠️ Firestore no disponible. Producto solo guardado en memoria temporal.');
+    }
+    
     res.json({ success: true, message: 'Producto importado desde SunSky', product: productoFinal });
   } catch (error) {
     console.error('❌ Error importando SunSky:', error.message);
@@ -622,8 +674,8 @@ app.use((err, req, res, next) => { console.error('❌ Error:', err.stack); res.s
 ════════════════════════════════════════════════════════════ */
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('==================================================');
-  console.log('✅ Bonü Backend v2.2 — CON SUNSKY API IMPLEMENTADA');
-  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | ☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '⚠️'}`);
+  console.log('✅ Bonü Backend v2.3 — CON FIREBASE ADMIN + SUNSKY');
+  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | ☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '⚠️'} | 🔥 Firestore: ${firestore ? '✅' : '⚠️'}`);
   console.log(`🌐 CORS permitidos: ${allowedOrigins.join(', ')}`);
   console.log('==================================================');
 });
