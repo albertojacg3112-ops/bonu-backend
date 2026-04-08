@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v2.1 (Production Ready)
+// index.js - Bonü Backend v2.2 (Con SunSky API implementada)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -9,19 +9,18 @@ const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
 /* ════════════════════════════════════════════════════════════
-   🔐 VARIABLES DE ENTORNO (Configurar en Render Dashboard)
+   🔐 VARIABLES DE ENTORNO
 ════════════════════════════════════════════════════════════ */
 const CJ_API_KEY = process.env.CJ_API_KEY;
 const CJ_API_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'bonu-admin-2024';
 const SUNSKY_API_KEY = process.env.SUNSKY_API_KEY;
 const SUNSKY_API_SECRET = process.env.SUNSKY_API_SECRET;
-const SUNSKY_BASE_URL = process.env.SUNSKY_BASE_URL || 'https://www.sunsky-online.com/api';
+const SUNSKY_BASE_URL = process.env.SUNSKY_BASE_URL || 'https://open.sunsky-online.com';
 
 /* ════════════════════════════════════════════════════════════
-   🛡️ MIDDLEWARE CORS CORREGIDO
+   🛡️ MIDDLEWARE CORS
 ════════════════════════════════════════════════════════════ */
-// Lista de orígenes permitidos
 const allowedOrigins = [
   'http://localhost:5500',
   'http://localhost:3000',
@@ -33,13 +32,12 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Permitir peticiones sin origen (como Postman) en desarrollo
     if (!origin && NODE_ENV !== 'production') return callback(null, true);
     if (allowedOrigins.includes(origin) || !origin) {
       callback(null, true);
     } else {
       console.log(`⚠️ CORS bloqueado: ${origin}`);
-      callback(null, true); // En desarrollo aceptamos todos, en producción restringir
+      callback(null, true);
     }
   },
   credentials: true,
@@ -52,7 +50,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* ════════════════════════════════════════════════════════════
    🗄️ BASE DE DATOS EN MEMORIA (Demo)
-   ⚠️ Para producción real: migrar a MongoDB/Supabase/Firebase Admin
 ════════════════════════════════════════════════════════════ */
 let DB = {
   ordenes: [],
@@ -170,14 +167,86 @@ const PROVIDERS = {
     id: 'sunsky', name: 'SunSky', color: '#f97316', type: 'api', hasApi: true,
     description: 'Electrónica y gadgets', categories: ['Tecnología','Celulares y Accesorios'],
     fetchProduct: async (sku) => {
-      if (!SUNSKY_API_KEY || !SUNSKY_API_SECRET) return { sku, nombre:'', descripcion:'', imagenes:[], stock:100, tallas:'', colores:'', medidas:'', rating:0, totalReviews:0, categoria:'Tecnología', proveedor:'SunSky', modoHybrid:true };
-      const timestamp = Math.floor(Date.now() / 1000);
-      const sign = crypto.createHmac('sha256', SUNSKY_API_SECRET).update(`${SUNSKY_API_KEY}${timestamp}${sku}`).digest('hex');
-      const res = await fetch(`${SUNSKY_BASE_URL}/product/detail?api_key=${SUNSKY_API_KEY}&timestamp=${timestamp}&sign=${sign}&sku=${sku}`);
-      const d = await res.json();
-      if (!d || d.error) throw new Error(d?.message || 'Producto no encontrado en SunSky');
-      const nombre = d.name || d.title || `Producto ${sku}`;
-      return { sku, nombre, descripcion: d.description || nombre, imagenes: (d.images || []).map(i => i.url || i).filter(Boolean), stock: Number(d.stock || 100), tallas: (d.sizes || []).join(', '), colores: (d.colors || []).join(', '), medidas: d.dimensions || '', rating: parseFloat(d.rating || 4.5), totalReviews: parseInt(d.reviews_count || 0, 10), categoria: detectarCategoria(nombre, d.description || '', d.category || ''), proveedor: 'SunSky', modoHybrid: false };
+      if (!SUNSKY_API_KEY || !SUNSKY_API_SECRET) {
+        console.warn('⚠️ SunSky: API keys no configuradas');
+        return { sku, nombre: '', descripcion: '', imagenes: [], stock: 100, tallas: '', colores: '', medidas: '', rating: 0, totalReviews: 0, categoria: 'Tecnología', proveedor: 'SunSky', modoHybrid: true };
+      }
+      
+      try {
+        // Generar firma MD5 según documentación de SunSky
+        const params = { itemNo: sku };
+        const keys = Object.keys(params).sort();
+        let stringToSign = '';
+        for (const key of keys) {
+          stringToSign += params[key];
+        }
+        stringToSign += SUNSKY_API_KEY;
+        stringToSign += '@' + SUNSKY_API_SECRET;
+        const signature = crypto.createHash('md5').update(stringToSign).digest('hex');
+        
+        // Construir URL con parámetros
+        const url = `${SUNSKY_BASE_URL}/openapi/product!detail.do`;
+        const queryParams = new URLSearchParams();
+        queryParams.append('itemNo', sku);
+        queryParams.append('key', SUNSKY_API_KEY);
+        queryParams.append('signature', signature);
+        
+        console.log(`🔍 SunSky API: Buscando SKU ${sku}`);
+        const response = await fetch(`${url}?${queryParams.toString()}`, { method: 'GET' });
+        const data = await response.json();
+        
+        if (data.result !== 'success' || !data.data) {
+          throw new Error(data.messages?.[0] || 'Producto no encontrado en SunSky');
+        }
+        
+        const product = data.data;
+        const nombre = product.name || `Producto ${sku}`;
+        const descripcion = product.description || nombre;
+        
+        let imagenes = [];
+        if (product.picCount > 0) {
+          for (let i = 1; i <= Math.min(product.picCount, 10); i++) {
+            imagenes.push(`https://img.sunsky-online.com/images/product/${product.itemNo}/${i}.jpg`);
+          }
+        }
+        
+        let tallas = '', colores = '';
+        if (product.modelList && product.modelList.length) {
+          const variantes = product.modelList.map(m => m.value);
+          if (product.modelLabel?.toLowerCase().includes('color')) {
+            colores = variantes.join(', ');
+          } else if (product.modelLabel?.toLowerCase().includes('size')) {
+            tallas = variantes.join(', ');
+          } else {
+            tallas = variantes.join(', ');
+          }
+        }
+        
+        return {
+          sku: product.itemNo,
+          nombre,
+          descripcion,
+          imagenes: imagenes.length ? imagenes : ['https://picsum.photos/500/500?random=1'],
+          stock: product.stock || 100,
+          tallas,
+          colores,
+          medidas: '',
+          rating: 4.5,
+          totalReviews: 0,
+          categoria: detectarCategoria(nombre, descripcion, ''),
+          proveedor: 'SunSky',
+          modoHybrid: false,
+          precioProveedor: parseFloat(product.price) || 0,
+          moneda: 'USD'
+        };
+      } catch (error) {
+        console.error('❌ Error en SunSky API:', error.message);
+        return { 
+          sku, nombre: '', descripcion: '', imagenes: [], stock: 100, 
+          tallas: '', colores: '', medidas: '', rating: 0, totalReviews: 0, 
+          categoria: 'Tecnología', proveedor: 'SunSky', modoHybrid: true 
+        };
+      }
     }
   },
   tvccmall: { id: 'tvccmall', name: 'TVCmall', color: '#0ea5e9', type: 'hybrid', hasApi: false, description: 'Accesorios móviles', categories: ['Celulares y Accesorios','Tecnología'], fetchProduct: async (sku) => ({ sku, nombre:'', descripcion:'', imagenes:[], stock:200, tallas:'', colores:'', medidas:'', rating:0, totalReviews:0, categoria:'Celulares y Accesorios', proveedor:'TVCmall', modoHybrid:true }) },
@@ -214,13 +283,13 @@ async function getCJToken() {
 /* ════════════════════════════════════════════════════════════
    🚦 RUTAS BASE
 ════════════════════════════════════════════════════════════ */
-app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.1.0', env: NODE_ENV }));
+app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.2.0', env: NODE_ENV }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', port: PORT, time: Date.now(), uptime: process.uptime() }));
-app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, timestamp: Date.now() }));
+app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, timestamp: Date.now() }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
 
 /* ════════════════════════════════════════════════════════════
-   📊 TRACKING DE VISITAS (Endpoint existente y funcional)
+   📊 TRACKING DE VISITAS
 ════════════════════════════════════════════════════════════ */
 app.post('/api/tracking/visita', (req, res) => {
   const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
@@ -254,7 +323,7 @@ app.post('/api/cj/import', async (req, res) => {
   let { sku, precioVenta, costoCJ, tipo, categoria } = req.body;
   if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
   sku = sku.split('-')[0];
-  console.log(`📦 IMPORTANDO: ${sku}`);
+  console.log(`📦 IMPORTANDO CJ: ${sku}`);
   try {
     const token = await getCJToken();
     const listRes = await fetch(`${CJ_API_URL}/product/list?productSku=${encodeURIComponent(sku)}&pageNum=1&pageSize=1`, { method: 'GET', headers: { 'CJ-Access-Token': token } });
@@ -294,7 +363,82 @@ app.post('/api/cj/import', async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   🌍 MULTI-PROVEEDOR
+   🌐 RUTAS SUNSKY (NUEVAS)
+════════════════════════════════════════════════════════════ */
+app.post('/api/sunsky/buscar', async (req, res) => {
+  const { sku } = req.body;
+  if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
+  try {
+    const provider = PROVIDERS.sunsky;
+    const product = await provider.fetchProduct(sku);
+    if (!product.nombre) {
+      return res.status(404).json({ success: false, error: `Producto ${sku} no encontrado en SunSky` });
+    }
+    res.json({ 
+      success: true, 
+      product: {
+        sku: product.sku,
+        nombre: product.nombre,
+        precio: product.precioProveedor,
+        stock: product.stock,
+        imagenes: product.imagenes,
+        descripcion: product.descripcion,
+        tallas: product.tallas,
+        colores: product.colores,
+        medidas: product.medidas,
+        rating: product.rating,
+        categoria: product.categoria
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error SunSky:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/sunsky/import', async (req, res) => {
+  let { sku, precioVenta, tipo, categoria } = req.body;
+  if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
+  try {
+    const provider = PROVIDERS.sunsky;
+    const product = await provider.fetchProduct(sku);
+    if (!product.nombre) {
+      throw new Error(`Producto ${sku} no encontrado en SunSky`);
+    }
+    const descuento = Math.floor(Math.random() * 20) + 5;
+    const precioOriginal = parseFloat(precioVenta) / (1 - descuento / 100);
+    const productoFinal = {
+      id: `SUN_${Date.now()}_${sku}`,
+      sku: product.sku,
+      nombre: product.nombre,
+      descripcion: product.descripcion,
+      categoria: categoria && CATEGORIAS.includes(categoria) ? categoria : product.categoria,
+      precioOriginal: Math.round(precioOriginal),
+      precioFinal: parseFloat(precioVenta),
+      costoProveedor: product.precioProveedor || 0,
+      descuento,
+      stock: product.stock || 100,
+      tipo: tipo || 'Especiales',
+      rating: product.rating || 4.5,
+      totalReviews: product.totalReviews || 0,
+      imagenes: product.imagenes,
+      tallas: product.tallas,
+      colores: product.colores,
+      medidas: product.medidas,
+      proveedor: 'SunSky',
+      sunskyData: { sku: product.sku },
+      fechaCreacion: new Date().toISOString()
+    };
+    DB.productos.push(productoFinal);
+    res.json({ success: true, message: 'Producto importado desde SunSky', product: productoFinal });
+  } catch (error) {
+    console.error('❌ Error importando SunSky:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ════════════════════════════════════════════════════════════
+   🌍 MULTI-PROVEEDOR (Actualizado con SunSky)
 ════════════════════════════════════════════════════════════ */
 app.get('/api/providers/list', (req, res) => {
   const list = Object.values(PROVIDERS).map(p => ({ id: p.id, name: p.name, color: p.color, type: p.type, hasApi: p.hasApi, description: p.description, categories: p.categories }));
@@ -439,7 +583,7 @@ app.get('/api/admin/dashboard', (req, res) => {
   const ordenesHoy = ordenes.filter(o => o.fechaCreacion?.startsWith(hoy)).length;
   const ordenesConvertidas = ordenes.filter(o => ['pagado','enviado'].includes(o.estado));
   const montoTotal = ordenesConvertidas.reduce((s, o) => s + (o.total || 0), 0);
-  const costoTotal = DB.productos.reduce((s, p) => { const vendidas = ordenes.filter(o => o.items?.some(i => i.sku === p.sku)).length; return s + (p.costoCJ || 0) * vendidas; }, 0);
+  const costoTotal = DB.productos.reduce((s, p) => { const vendidas = ordenes.filter(o => o.items?.some(i => i.sku === p.sku)).length; return s + (p.costoCJ || p.costoProveedor || 0) * vendidas; }, 0);
   const gananciaTotal = montoTotal - costoTotal;
   const estadosConteo = { pendiente: 0, pagado: 0, enviado: 0, cancelado: 0 };
   for (const o of ordenes) estadosConteo[o.estado] = (estadosConteo[o.estado] || 0) + 1;
@@ -478,15 +622,14 @@ app.use((err, req, res, next) => { console.error('❌ Error:', err.stack); res.s
 ════════════════════════════════════════════════════════════ */
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('==================================================');
-  console.log('✅ Bonü Backend v2.1 — LISTO PARA PRODUCCIÓN');
-  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'}`);
+  console.log('✅ Bonü Backend v2.2 — CON SUNSKY API IMPLEMENTADA');
+  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | ☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '⚠️'}`);
   console.log(`🌐 CORS permitidos: ${allowedOrigins.join(', ')}`);
   console.log('==================================================');
 });
 
-// Graceful shutdown para Render
+// Graceful shutdown
 process.on('SIGTERM', () => { console.log('🔄 Cerrando servidor...'); server.close(() => process.exit(0)); });
 process.on('SIGINT', () => { console.log('🔄 Cerrando servidor...'); server.close(() => process.exit(0)); });
 
-// Exportar para testing (no afecta producción)
 module.exports = app;
