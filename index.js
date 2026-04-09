@@ -1,21 +1,210 @@
-// index.js - Bonü Backend v2.4 (Con mejora de imágenes SunSky)
+// index.js - Bonü Backend v2.5 (Con envío automático de emails de confirmación)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
 /* ════════════════════════════════════════════════════════════
+   📧 CONFIGURACIÓN DE EMAIL (NODEMAILER)
+════════════════════════════════════════════════════════════ */
+let emailTransporter = null;
+let emailConfigurado = false;
+
+// Intentar configurar el transporter de email si hay credenciales
+if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+    try {
+        emailTransporter = nodemailer.createTransport({
+            service: process.env.EMAIL_SERVICE || 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS
+            }
+        });
+        emailConfigurado = true;
+        console.log('✅ Email transporter configurado correctamente');
+    } catch (error) {
+        console.warn('⚠️ Error configurando email:', error.message);
+        console.warn('⚠️ Los emails de confirmación NO se enviarán');
+    }
+} else {
+    console.warn('⚠️ EMAIL_USER o EMAIL_PASS no configurados en variables de entorno');
+    console.warn('⚠️ Los emails de confirmación NO se enviarán');
+}
+
+// Función para formatear moneda
+function formatCurrency(amount, currency = 'MXN') {
+    return new Intl.NumberFormat('es-MX', { style: 'currency', currency: currency }).format(amount);
+}
+
+// Función para enviar email de confirmación de compra
+async function sendConfirmationEmail(orderData) {
+    if (!emailConfigurado || !emailTransporter) {
+        console.log('⚠️ Email no configurado, no se enviará confirmación');
+        return false;
+    }
+    
+    const { orderId, customerEmail, customerName, total, items, shippingAddress, paymentMethod, date } = orderData;
+    
+    // Generar HTML del email
+    const itemsHtml = items.map(item => `
+        <tr style="border-bottom: 1px solid #e5e7eb;">
+            <td style="padding: 12px 8px;">
+                <img src="${item.imagenes?.[0] || 'https://via.placeholder.com/50'}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px;" alt="${item.nombre}">
+            </td>
+            <td style="padding: 12px 8px;">
+                <strong>${item.nombre}</strong><br>
+                <span style="font-size: 12px; color: #6b7280;">Cantidad: ${item.cantidad || 1}</span>
+            </td>
+            <td style="padding: 12px 8px; text-align: right;">
+                ${formatCurrency(item.precioFinal * (item.cantidad || 1))}
+            </td>
+        </tr>
+    `).join('');
+    
+    const subtotal = items.reduce((sum, item) => sum + (item.precioFinal * (item.cantidad || 1)), 0);
+    const envio = 0; // Envío gratis siempre
+    const totalFinal = subtotal + envio;
+    
+    const html = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Confirmación de compra Bonü</title>
+            <style>
+                body { font-family: 'Arial', sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; }
+                .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+                .header { background: linear-gradient(135deg, #facc15 0%, #fbbf24 100%); padding: 24px; text-align: center; }
+                .header h1 { color: #000000; margin: 0; font-size: 28px; font-weight: bold; }
+                .header p { color: #1f2937; margin: 8px 0 0; }
+                .content { padding: 24px; }
+                .order-info { background-color: #f9fafb; border-radius: 12px; padding: 16px; margin-bottom: 24px; }
+                .order-info p { margin: 8px 0; }
+                .order-id { font-size: 20px; font-weight: bold; color: #facc15; background-color: #1f2937; display: inline-block; padding: 4px 12px; border-radius: 8px; }
+                table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+                th { text-align: left; padding: 12px 8px; background-color: #f3f4f6; font-weight: 600; }
+                .totals { text-align: right; margin-top: 16px; padding-top: 16px; border-top: 2px solid #e5e7eb; }
+                .totals p { margin: 4px 0; }
+                .totals .grand-total { font-size: 20px; font-weight: bold; color: #16a34a; }
+                .footer { background-color: #111827; padding: 20px; text-align: center; color: #9ca3af; font-size: 12px; }
+                .footer a { color: #facc15; text-decoration: none; }
+                .btn { display: inline-block; background-color: #facc15; color: #000000; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 16px; }
+                .tracking-link { margin-top: 16px; text-align: center; }
+            </style>
+        </head>
+        <body style="font-family: 'Arial', sans-serif; background-color: #f3f4f6; margin: 0; padding: 20px;">
+            <div class="container">
+                <div class="header">
+                    <h1>✨ Bonü ✨</h1>
+                    <p>¡Gracias por tu compra!</p>
+                </div>
+                <div class="content">
+                    <div class="order-info">
+                        <p>Hola <strong>${customerName}</strong>,</p>
+                        <p>Tu pedido ha sido confirmado y está siendo procesado.</p>
+                        <p style="margin-top: 12px;">
+                            <span class="order-id">#${orderId}</span>
+                        </p>
+                        <p><strong>Fecha:</strong> ${new Date(date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                        <p><strong>Método de pago:</strong> ${paymentMethod || 'Tarjeta'}</p>
+                    </div>
+                    
+                    <h3 style="margin-bottom: 8px;">📦 Resumen del pedido</h3>
+                    <table>
+                        <thead>
+                            <tr><th>Producto</th><th>Detalle</th><th style="text-align: right;">Total</th></tr>
+                        </thead>
+                        <tbody>
+                            ${itemsHtml}
+                        </tbody>
+                    </table>
+                    
+                    <div class="totals">
+                        <p>Subtotal: <strong>${formatCurrency(subtotal)}</strong></p>
+                        <p>Envío: <strong>${formatCurrency(envio)} (GRATIS)</strong></p>
+                        <p class="grand-total">Total: ${formatCurrency(totalFinal)}</p>
+                    </div>
+                    
+                    ${shippingAddress ? `
+                    <div style="margin-top: 24px; padding: 16px; background-color: #f9fafb; border-radius: 12px;">
+                        <h4 style="margin: 0 0 8px;">📍 Dirección de envío</h4>
+                        <p style="margin: 0;">${shippingAddress.nombre || ''}<br>
+                        ${shippingAddress.direccion || ''}<br>
+                        ${shippingAddress.ciudad || ''}, ${shippingAddress.estado || ''} ${shippingAddress.cp || ''}<br>
+                        ${shippingAddress.pais || 'México'}<br>
+                        Tel: ${shippingAddress.telefono || ''}</p>
+                    </div>
+                    ` : ''}
+                    
+                    <div class="tracking-link">
+                        <p>Puedes seguir el estado de tu pedido en:</p>
+                        <a href="https://xn--bon-joa.com/mis-pedidos" class="btn">🔍 Ver mi pedido</a>
+                    </div>
+                    
+                    <p style="margin-top: 24px; font-size: 12px; color: #6b7280; text-align: center;">
+                        ¿Tienes preguntas? Contáctanos en <a href="mailto:bonu.marketplace@gmail.com" style="color: #facc15;">bonu.marketplace@gmail.com</a> o por WhatsApp al +52 322 270 0732
+                    </p>
+                </div>
+                <div class="footer">
+                    <p>© 2026 Bonü Global Marketplace - Todos los derechos reservados</p>
+                    <p style="margin-top: 8px;">
+                        <a href="https://xn--bon-joa.com/politica-privacidad">Política de privacidad</a> | 
+                        <a href="https://xn--bon-joa.com/terminos">Términos y condiciones</a>
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+    `;
+    
+    const text = `
+        ✨ Bonü - Confirmación de compra ✨
+        
+        Hola ${customerName},
+        
+        Tu pedido #${orderId} ha sido confirmado.
+        
+        Fecha: ${new Date(date).toLocaleDateString('es-MX')}
+        Total: ${formatCurrency(totalFinal)}
+        
+        Productos:
+        ${items.map(item => `- ${item.nombre} x${item.cantidad || 1}: ${formatCurrency(item.precioFinal * (item.cantidad || 1))}`).join('\n')}
+        
+        Envío: GRATIS
+        
+        ¿Dudas? Contáctanos en bonu.marketplace@gmail.com
+        
+        ¡Gracias por comprar en Bonü!
+    `;
+    
+    try {
+        await emailTransporter.sendMail({
+            from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
+            to: customerEmail,
+            subject: `✅ Confirmación de compra Bonü - Pedido #${orderId}`,
+            html: html,
+            text: text
+        });
+        console.log(`📧 Email de confirmación enviado a ${customerEmail} para orden ${orderId}`);
+        return true;
+    } catch (error) {
+        console.error('❌ Error enviando email:', error.message);
+        return false;
+    }
+}
+
+/* ════════════════════════════════════════════════════════════
    🔥 FIREBASE ADMIN SDK (para guardar en Firestore)
 ════════════════════════════════════════════════════════════ */
-// Inicializar Firebase Admin solo si no está ya inicializado
 if (!admin.apps.length) {
     try {
-        // Intentar inicializar con credenciales desde variables de entorno (Render)
         if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
             admin.initializeApp({
                 credential: admin.credential.cert({
@@ -26,9 +215,7 @@ if (!admin.apps.length) {
             });
             console.log('✅ Firebase Admin inicializado con variables de entorno');
         } else {
-            // Fallback: intentar con archivo de credenciales local (solo desarrollo)
             console.warn('⚠️ No se encontraron credenciales de Firebase Admin en variables de entorno');
-            console.warn('⚠️ Los productos importados NO se guardarán en Firestore');
         }
     } catch (error) {
         console.error('❌ Error inicializando Firebase Admin:', error.message);
@@ -201,7 +388,6 @@ const PROVIDERS = {
       }
       
       try {
-        // Generar firma MD5 según documentación de SunSky
         const params = { itemNo: sku };
         const keys = Object.keys(params).sort();
         let stringToSign = '';
@@ -212,7 +398,6 @@ const PROVIDERS = {
         stringToSign += '@' + SUNSKY_API_SECRET;
         const signature = crypto.createHash('md5').update(stringToSign).digest('hex');
         
-        // Construir URL con parámetros
         const url = `${SUNSKY_BASE_URL}/openapi/product!detail.do`;
         const queryParams = new URLSearchParams();
         queryParams.append('itemNo', sku);
@@ -231,34 +416,23 @@ const PROVIDERS = {
         const nombre = product.name || `Producto ${sku}`;
         const descripcion = product.description || nombre;
         
-        // ========== MEJORADA: OBTENER IMÁGENES ==========
         let imagenes = [];
-        
-        // Método 1: Usar picCount (formato original)
         if (product.picCount && product.picCount > 0) {
           for (let i = 1; i <= Math.min(product.picCount, 10); i++) {
             imagenes.push(`https://img.sunsky-online.com/images/product/${product.itemNo}/${i}.jpg`);
           }
         }
-        
-        // Método 2: Si hay campo images o imgList
         if (product.images && Array.isArray(product.images) && product.images.length) {
           imagenes = product.images.map(img => img.url || img).filter(Boolean);
         }
-        
         if (product.imgList && Array.isArray(product.imgList) && product.imgList.length) {
           imagenes = product.imgList.map(img => img.url || img).filter(Boolean);
         }
-        
-        // Método 3: Si hay campo mainImage o mainImg
         if (product.mainImage) imagenes.push(product.mainImage);
         if (product.mainImg) imagenes.push(product.mainImg);
-        
-        // Método 4: Si hay campo pictureUrl o picUrl
         if (product.pictureUrl) imagenes.push(product.pictureUrl);
         if (product.picUrl) imagenes.push(product.picUrl);
         
-        // Método 5: Si no hay imágenes, usar placeholder
         if (imagenes.length === 0) {
           console.log(`⚠️ No se encontraron imágenes para ${sku}, usando placeholder`);
           imagenes = [`https://picsum.photos/seed/${sku}/400/400`];
@@ -339,9 +513,9 @@ async function getCJToken() {
 /* ════════════════════════════════════════════════════════════
    🚦 RUTAS BASE
 ════════════════════════════════════════════════════════════ */
-app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.4.0', env: NODE_ENV }));
+app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.5.0', env: NODE_ENV }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', port: PORT, time: Date.now(), uptime: process.uptime() }));
-app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, firestoreConfigured: !!firestore, timestamp: Date.now() }));
+app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, firestoreConfigured: !!firestore, emailConfigured: emailConfigurado, timestamp: Date.now() }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
 
 /* ════════════════════════════════════════════════════════════
@@ -415,7 +589,6 @@ app.post('/api/cj/import', async (req, res) => {
     };
     DB.productos.push(productoFinal);
     
-    // Guardar en Firestore si está disponible
     if (firestore) {
       try {
         await firestore.collection('productos').add(productoFinal);
@@ -430,7 +603,7 @@ app.post('/api/cj/import', async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   🌐 RUTAS SUNSKY (NUEVAS)
+   🌐 RUTAS SUNSKY
 ════════════════════════════════════════════════════════════ */
 app.post('/api/sunsky/buscar', async (req, res) => {
   const { sku } = req.body;
@@ -498,7 +671,6 @@ app.post('/api/sunsky/import', async (req, res) => {
     };
     DB.productos.push(productoFinal);
     
-    // ⭐ GUARDAR EN FIRESTORE (la parte importante)
     if (firestore) {
       try {
         const docRef = await firestore.collection('productos').add(productoFinal);
@@ -506,8 +678,6 @@ app.post('/api/sunsky/import', async (req, res) => {
       } catch (firestoreError) {
         console.error('❌ Error guardando en Firestore:', firestoreError.message);
       }
-    } else {
-      console.warn('⚠️ Firestore no disponible. Producto solo guardado en memoria temporal.');
     }
     
     res.json({ success: true, message: 'Producto importado desde SunSky', product: productoFinal });
@@ -518,56 +688,37 @@ app.post('/api/sunsky/import', async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   🌍 MULTI-PROVEEDOR (Actualizado con SunSky)
+   📧 RUTA PARA ENVÍO DE EMAIL DE CONFIRMACIÓN
 ════════════════════════════════════════════════════════════ */
-app.get('/api/providers/list', (req, res) => {
-  const list = Object.values(PROVIDERS).map(p => ({ id: p.id, name: p.name, color: p.color, type: p.type, hasApi: p.hasApi, description: p.description, categories: p.categories }));
-  res.json({ success: true, providers: list });
-});
-
-app.post('/api/providers/fetch-product', async (req, res) => {
-  const { providerId, sku, categoria } = req.body;
-  if (!providerId || !sku) return res.status(400).json({ success: false, error: 'providerId y sku requeridos' });
-  const provider = PROVIDERS[providerId];
-  if (!provider) return res.status(404).json({ success: false, error: `Proveedor "${providerId}" no encontrado` });
-  try {
-    const product = await provider.fetchProduct(sku.trim());
-    if (categoria && CATEGORIAS.includes(categoria)) product.categoria = categoria;
-    res.json({ success: true, product, provider: { id: provider.id, name: provider.name } });
-  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-app.post('/api/providers/order', async (req, res) => {
-  const { pedidoId, proveedorId, items, direccion } = req.body;
-  if (!pedidoId || !proveedorId || !items?.length) return res.status(400).json({ success: false, error: 'Faltan datos' });
-  const provider = PROVIDERS[proveedorId];
-  if (!provider) return res.status(404).json({ success: false, error: `Proveedor "${proveedorId}" no encontrado` });
-  console.log(`📦 [${provider.name}] Pedido: ${pedidoId}`);
-  if (proveedorId === 'cj') {
-    try {
-      const token = await getCJToken();
-      const orderPayload = {
-        orderNumber: pedidoId, shippingZip: direccion?.cp || '', shippingCountry: direccion?.pais || 'MX',
-        shippingAddress: direccion?.direccion || '', shippingCustomerName: direccion?.nombre || '',
-        shippingPhone: direccion?.telefono || '', houseNumber: '',
-        products: items.map(item => ({ vid: item.cjVid || item.sku, quantity: item.cantidad || 1 }))
-      };
-      const orderRes = await fetch(`${CJ_API_URL}/shopping/order/createOrderV2`, {
-        method: 'POST', headers: { 'CJ-Access-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(orderPayload)
-      });
-      const orderData = await orderRes.json();
-      if (orderData.code === 200) {
-        DB.ordenes.push({ id: pedidoId, proveedorOrdenId: orderData.data?.orderId, proveedor: 'CJ Dropshipping', items, direccion, estado: 'pagado', fechaCreacion: new Date().toISOString(), total: items.reduce((s, i) => s + (i.precio * (i.cantidad || 1)), 0), pasarela: 'CJ Auto' });
-        return res.json({ success: true, proveedorOrdenId: orderData.data?.orderId, proveedor: 'CJ Dropshipping' });
-      }
-    } catch (cjErr) { console.error('❌ Error pedido CJ:', cjErr.message); }
+app.post('/api/send-confirmation', async (req, res) => {
+  const { orderId, customerEmail, customerName, total, items, shippingAddress, paymentMethod, date } = req.body;
+  
+  if (!orderId || !customerEmail || !customerName) {
+    return res.status(400).json({ success: false, error: 'Faltan datos requeridos para enviar email' });
   }
-  DB.ordenes.push({ id: pedidoId, proveedor: provider.name, items, direccion, estado: 'pendiente', manual: true, fechaCreacion: new Date().toISOString(), total: items.reduce((s, i) => s + (i.precio * (i.cantidad || 1)), 0), pasarela: 'Manual' });
-  res.json({ success: true, manual: true, proveedor: provider.name, pedidoId });
+  
+  console.log(`📧 Solicitando envío de email para orden ${orderId} a ${customerEmail}`);
+  
+  const result = await sendConfirmationEmail({
+    orderId,
+    customerEmail,
+    customerName,
+    total,
+    items: items || [],
+    shippingAddress,
+    paymentMethod,
+    date: date || new Date().toISOString()
+  });
+  
+  if (result) {
+    res.json({ success: true, message: 'Email de confirmación enviado' });
+  } else {
+    res.status(500).json({ success: false, error: 'No se pudo enviar el email' });
+  }
 });
 
 /* ════════════════════════════════════════════════════════════
-   📦 ÓRDENES
+   📦 ÓRDENES (ACTUALIZADO para enviar email automáticamente)
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/ordenes', (req, res) => {
   const { estado, page = 1, limit = 20 } = req.query;
@@ -589,12 +740,43 @@ app.patch('/api/admin/ordenes/:id/estado', (req, res) => {
   res.json({ success: true, orden: DB.ordenes[idx] });
 });
 
-app.post('/api/admin/ordenes', (req, res) => {
-  const { usuario, items, direccion, total, pasarela, proveedorId } = req.body;
+app.post('/api/admin/ordenes', async (req, res) => {
+  const { usuario, items, direccion, total, pasarela, proveedorId, customerEmail } = req.body;
   if (!items?.length || !total) return res.status(400).json({ success: false, error: 'items y total requeridos' });
-  const orden = { id: `ORD-${generarId()}`, usuario: usuario || 'Invitado', items, direccion, total: parseFloat(total), pasarela: pasarela || 'Desconocida', proveedorId: proveedorId || 'cj', estado: 'pendiente', fechaCreacion: new Date().toISOString() };
+  
+  const ordenId = `ORD-${generarId()}`;
+  const orden = { 
+    id: ordenId, 
+    usuario: usuario || 'Invitado', 
+    items, 
+    direccion, 
+    total: parseFloat(total), 
+    pasarela: pasarela || 'Desconocida', 
+    proveedorId: proveedorId || 'cj', 
+    estado: 'pagado',
+    emailCliente: customerEmail || direccion?.email,
+    fechaCreacion: new Date().toISOString() 
+  };
   DB.ordenes.push(orden);
-  DB.transacciones.push({ id: `TXN-${generarId()}`, ordenId: orden.id, monto: orden.total, pasarela: orden.pasarela, estado: 'pendiente', fechaCreacion: orden.fechaCreacion });
+  DB.transacciones.push({ id: `TXN-${generarId()}`, ordenId: orden.id, monto: orden.total, pasarela: orden.pasarela, estado: 'pagado', fechaCreacion: orden.fechaCreacion });
+  
+  // Enviar email de confirmación automáticamente
+  if (customerEmail || direccion?.email) {
+    const emailEnviado = await sendConfirmationEmail({
+      orderId: orden.id,
+      customerEmail: customerEmail || direccion.email,
+      customerName: usuario || direccion?.nombre || 'Cliente',
+      total: orden.total,
+      items: items,
+      shippingAddress: direccion,
+      paymentMethod: pasarela,
+      date: orden.fechaCreacion
+    });
+    console.log(`📧 Email confirmación orden ${orden.id}: ${emailEnviado ? 'ENVIADO ✅' : 'FALLÓ ❌'}`);
+  } else {
+    console.log(`⚠️ No se pudo enviar email para orden ${orden.id}: falta email del cliente`);
+  }
+  
   res.json({ success: true, orden });
 });
 
@@ -702,13 +884,13 @@ app.use((err, req, res, next) => { console.error('❌ Error:', err.stack); res.s
 ════════════════════════════════════════════════════════════ */
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('==================================================');
-  console.log('✅ Bonü Backend v2.4 — CON FIREBASE ADMIN + SUNSKY (IMÁGENES MEJORADAS)');
+  console.log('✅ Bonü Backend v2.5 — CON ENVÍO AUTOMÁTICO DE EMAILS');
   console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | ☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '⚠️'} | 🔥 Firestore: ${firestore ? '✅' : '⚠️'}`);
+  console.log(`📧 Email: ${emailConfigurado ? '✅ Configurado' : '⚠️ NO CONFIGURADO'}`);
   console.log(`🌐 CORS permitidos: ${allowedOrigins.join(', ')}`);
   console.log('==================================================');
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => { console.log('🔄 Cerrando servidor...'); server.close(() => process.exit(0)); });
 process.on('SIGINT', () => { console.log('🔄 Cerrando servidor...'); server.close(() => process.exit(0)); });
 
