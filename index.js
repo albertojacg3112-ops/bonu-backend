@@ -1,207 +1,115 @@
-// index.js - Bonü Backend v2.5 (Con envío automático de emails de confirmación)
+// index.js - Bonü Backend v3.0 (PRODUCCIÓN - Todo en Firestore)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
 /* ════════════════════════════════════════════════════════════
-   📧 CONFIGURACIÓN DE EMAIL (NODEMAILER)
+   🛡️ SEGURIDAD (NUEVO)
+════════════════════════════════════════════════════════════ */
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+}));
+
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: { success: false, error: 'Demasiadas peticiones, intente más tarde' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+app.use('/api/', limiter);
+
+/* ════════════════════════════════════════════════════════════
+   📧 CONFIGURACIÓN DE EMAIL
 ════════════════════════════════════════════════════════════ */
 let emailTransporter = null;
 let emailConfigurado = false;
 
-// Intentar configurar el transporter de email si hay credenciales
 if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
     try {
         emailTransporter = nodemailer.createTransport({
             service: process.env.EMAIL_SERVICE || 'gmail',
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS
-            }
+            auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
         });
         emailConfigurado = true;
-        console.log('✅ Email transporter configurado correctamente');
+        console.log('✅ Email configurado');
     } catch (error) {
-        console.warn('⚠️ Error configurando email:', error.message);
-        console.warn('⚠️ Los emails de confirmación NO se enviarán');
+        console.warn('⚠️ Error email:', error.message);
     }
-} else {
-    console.warn('⚠️ EMAIL_USER o EMAIL_PASS no configurados en variables de entorno');
-    console.warn('⚠️ Los emails de confirmación NO se enviarán');
 }
 
-// Función para formatear moneda
 function formatCurrency(amount, currency = 'MXN') {
-    return new Intl.NumberFormat('es-MX', { style: 'currency', currency: currency }).format(amount);
+    return new Intl.NumberFormat('es-MX', { style: 'currency', currency }).format(amount);
 }
 
-// Función para enviar email de confirmación de compra
 async function sendConfirmationEmail(orderData) {
-    if (!emailConfigurado || !emailTransporter) {
-        console.log('⚠️ Email no configurado, no se enviará confirmación');
-        return false;
-    }
+    if (!emailConfigurado || !emailTransporter) return false;
     
     const { orderId, customerEmail, customerName, total, items, shippingAddress, paymentMethod, date } = orderData;
     
-    // Generar HTML del email
-    const itemsHtml = items.map(item => `
-        <tr style="border-bottom: 1px solid #e5e7eb;">
-            <td style="padding: 12px 8px;">
-                <img src="${item.imagenes?.[0] || 'https://via.placeholder.com/50'}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px;" alt="${item.nombre}">
-            </td>
-            <td style="padding: 12px 8px;">
-                <strong>${item.nombre}</strong><br>
-                <span style="font-size: 12px; color: #6b7280;">Cantidad: ${item.cantidad || 1}</span>
-            </td>
-            <td style="padding: 12px 8px; text-align: right;">
-                ${formatCurrency(item.precioFinal * (item.cantidad || 1))}
-            </td>
+    const itemsHtml = (items || []).map(item => `
+        <tr>
+            <td style="padding: 12px 8px;">${item.nombre}</td>
+            <td style="padding: 12px 8px;">Cantidad: ${item.cantidad || 1}</td>
+            <td style="padding: 12px 8px; text-align: right;">${formatCurrency((item.precioFinal || item.precio || 0) * (item.cantidad || 1))}</td>
         </tr>
     `).join('');
     
-    const subtotal = items.reduce((sum, item) => sum + (item.precioFinal * (item.cantidad || 1)), 0);
-    const envio = 0; // Envío gratis siempre
-    const totalFinal = subtotal + envio;
+    const subtotal = (items || []).reduce((sum, item) => sum + ((item.precioFinal || item.precio || 0) * (item.cantidad || 1)), 0);
+    const totalFinal = subtotal;
     
     const html = `
         <!DOCTYPE html>
         <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Confirmación de compra Bonü</title>
-            <style>
-                body { font-family: 'Arial', sans-serif; background-color: #f3f4f6; margin: 0; padding: 0; }
-                .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-                .header { background: linear-gradient(135deg, #facc15 0%, #fbbf24 100%); padding: 24px; text-align: center; }
-                .header h1 { color: #000000; margin: 0; font-size: 28px; font-weight: bold; }
-                .header p { color: #1f2937; margin: 8px 0 0; }
-                .content { padding: 24px; }
-                .order-info { background-color: #f9fafb; border-radius: 12px; padding: 16px; margin-bottom: 24px; }
-                .order-info p { margin: 8px 0; }
-                .order-id { font-size: 20px; font-weight: bold; color: #facc15; background-color: #1f2937; display: inline-block; padding: 4px 12px; border-radius: 8px; }
-                table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-                th { text-align: left; padding: 12px 8px; background-color: #f3f4f6; font-weight: 600; }
-                .totals { text-align: right; margin-top: 16px; padding-top: 16px; border-top: 2px solid #e5e7eb; }
-                .totals p { margin: 4px 0; }
-                .totals .grand-total { font-size: 20px; font-weight: bold; color: #16a34a; }
-                .footer { background-color: #111827; padding: 20px; text-align: center; color: #9ca3af; font-size: 12px; }
-                .footer a { color: #facc15; text-decoration: none; }
-                .btn { display: inline-block; background-color: #facc15; color: #000000; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 16px; }
-                .tracking-link { margin-top: 16px; text-align: center; }
-            </style>
-        </head>
-        <body style="font-family: 'Arial', sans-serif; background-color: #f3f4f6; margin: 0; padding: 20px;">
-            <div class="container">
-                <div class="header">
-                    <h1>✨ Bonü ✨</h1>
+        <head><meta charset="UTF-8"><title>Confirmación Bonü</title></head>
+        <body style="font-family: Arial, sans-serif;">
+            <div style="max-width: 600px; margin: 0 auto; background: #fff; border-radius: 16px; overflow: hidden;">
+                <div style="background: linear-gradient(135deg, #facc15, #fbbf24); padding: 24px; text-align: center;">
+                    <h1 style="color: #000;">✨ Bonü ✨</h1>
                     <p>¡Gracias por tu compra!</p>
                 </div>
-                <div class="content">
-                    <div class="order-info">
-                        <p>Hola <strong>${customerName}</strong>,</p>
-                        <p>Tu pedido ha sido confirmado y está siendo procesado.</p>
-                        <p style="margin-top: 12px;">
-                            <span class="order-id">#${orderId}</span>
-                        </p>
-                        <p><strong>Fecha:</strong> ${new Date(date).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
-                        <p><strong>Método de pago:</strong> ${paymentMethod || 'Tarjeta'}</p>
-                    </div>
-                    
-                    <h3 style="margin-bottom: 8px;">📦 Resumen del pedido</h3>
-                    <table>
-                        <thead>
-                            <tr><th>Producto</th><th>Detalle</th><th style="text-align: right;">Total</th></tr>
-                        </thead>
-                        <tbody>
-                            ${itemsHtml}
-                        </tbody>
-                    </table>
-                    
-                    <div class="totals">
-                        <p>Subtotal: <strong>${formatCurrency(subtotal)}</strong></p>
-                        <p>Envío: <strong>${formatCurrency(envio)} (GRATIS)</strong></p>
-                        <p class="grand-total">Total: ${formatCurrency(totalFinal)}</p>
-                    </div>
-                    
-                    ${shippingAddress ? `
-                    <div style="margin-top: 24px; padding: 16px; background-color: #f9fafb; border-radius: 12px;">
-                        <h4 style="margin: 0 0 8px;">📍 Dirección de envío</h4>
-                        <p style="margin: 0;">${shippingAddress.nombre || ''}<br>
-                        ${shippingAddress.direccion || ''}<br>
-                        ${shippingAddress.ciudad || ''}, ${shippingAddress.estado || ''} ${shippingAddress.cp || ''}<br>
-                        ${shippingAddress.pais || 'México'}<br>
-                        Tel: ${shippingAddress.telefono || ''}</p>
-                    </div>
-                    ` : ''}
-                    
-                    <div class="tracking-link">
-                        <p>Puedes seguir el estado de tu pedido en:</p>
-                        <a href="https://xn--bon-joa.com/mis-pedidos" class="btn">🔍 Ver mi pedido</a>
-                    </div>
-                    
-                    <p style="margin-top: 24px; font-size: 12px; color: #6b7280; text-align: center;">
-                        ¿Tienes preguntas? Contáctanos en <a href="mailto:bonu.marketplace@gmail.com" style="color: #facc15;">bonu.marketplace@gmail.com</a> o por WhatsApp al +52 322 270 0732
-                    </p>
+                <div style="padding: 24px;">
+                    <p>Hola <strong>${customerName}</strong>,</p>
+                    <p>Tu pedido <strong>#${orderId}</strong> ha sido confirmado.</p>
+                    <p>Total: ${formatCurrency(totalFinal)}</p>
+                    <h3>Productos:</h3>
+                    <table style="width: 100%;">${itemsHtml}</table>
                 </div>
-                <div class="footer">
-                    <p>© 2026 Bonü Global Marketplace - Todos los derechos reservados</p>
-                    <p style="margin-top: 8px;">
-                        <a href="https://xn--bon-joa.com/politica-privacidad">Política de privacidad</a> | 
-                        <a href="https://xn--bon-joa.com/terminos">Términos y condiciones</a>
-                    </p>
+                <div style="background: #111827; padding: 20px; text-align: center; color: #9ca3af;">
+                    <p>© 2026 Bonü - Todos los derechos reservados</p>
                 </div>
             </div>
         </body>
         </html>
     `;
     
-    const text = `
-        ✨ Bonü - Confirmación de compra ✨
-        
-        Hola ${customerName},
-        
-        Tu pedido #${orderId} ha sido confirmado.
-        
-        Fecha: ${new Date(date).toLocaleDateString('es-MX')}
-        Total: ${formatCurrency(totalFinal)}
-        
-        Productos:
-        ${items.map(item => `- ${item.nombre} x${item.cantidad || 1}: ${formatCurrency(item.precioFinal * (item.cantidad || 1))}`).join('\n')}
-        
-        Envío: GRATIS
-        
-        ¿Dudas? Contáctanos en bonu.marketplace@gmail.com
-        
-        ¡Gracias por comprar en Bonü!
-    `;
-    
     try {
         await emailTransporter.sendMail({
-            from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
+            from: `"Bonü" <${process.env.EMAIL_USER}>`,
             to: customerEmail,
-            subject: `✅ Confirmación de compra Bonü - Pedido #${orderId}`,
-            html: html,
-            text: text
+            subject: `✅ Confirmación #${orderId}`,
+            html
         });
-        console.log(`📧 Email de confirmación enviado a ${customerEmail} para orden ${orderId}`);
+        console.log(`📧 Email enviado a ${customerEmail}`);
         return true;
     } catch (error) {
-        console.error('❌ Error enviando email:', error.message);
+        console.error('❌ Error email:', error.message);
         return false;
     }
 }
 
 /* ════════════════════════════════════════════════════════════
-   🔥 FIREBASE ADMIN SDK (para guardar en Firestore)
+   🔥 FIREBASE ADMIN SDK
 ════════════════════════════════════════════════════════════ */
 if (!admin.apps.length) {
     try {
@@ -213,685 +121,492 @@ if (!admin.apps.length) {
                     privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
                 })
             });
-            console.log('✅ Firebase Admin inicializado con variables de entorno');
+            console.log('✅ Firebase Admin inicializado');
         } else {
-            console.warn('⚠️ No se encontraron credenciales de Firebase Admin en variables de entorno');
+            console.error('❌ Faltan credenciales de Firebase');
         }
     } catch (error) {
-        console.error('❌ Error inicializando Firebase Admin:', error.message);
+        console.error('❌ Error Firebase:', error.message);
     }
 }
 const firestore = admin.apps.length ? admin.firestore() : null;
+
+if (!firestore) {
+    console.error('❌ CRÍTICO: Firestore no disponible. El backend NO funcionará correctamente.');
+}
 
 /* ════════════════════════════════════════════════════════════
    🔐 VARIABLES DE ENTORNO
 ════════════════════════════════════════════════════════════ */
 const CJ_API_KEY = process.env.CJ_API_KEY;
 const CJ_API_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'bonu-admin-2024';
 const SUNSKY_API_KEY = process.env.SUNSKY_API_KEY;
 const SUNSKY_API_SECRET = process.env.SUNSKY_API_SECRET;
 const SUNSKY_BASE_URL = process.env.SUNSKY_BASE_URL || 'https://open.sunsky-online.com';
 
 /* ════════════════════════════════════════════════════════════
-   🛡️ MIDDLEWARE CORS
+   🛡️ CORS
 ════════════════════════════════════════════════════════════ */
 const allowedOrigins = [
-  'http://localhost:5500',
-  'http://localhost:3000',
-  'https://bonumktp.web.app',
-  'https://bonumktp.firebaseapp.com',
-  'https://xn--bon-joa.com',
-  process.env.FRONTEND_URL
+    'http://localhost:5500',
+    'http://localhost:3000',
+    'https://bonumktp.web.app',
+    'https://bonumktp.firebaseapp.com',
+    'https://xn--bon-joa.com',
+    process.env.FRONTEND_URL
 ].filter(Boolean);
 
 app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin && NODE_ENV !== 'production') return callback(null, true);
-    if (allowedOrigins.includes(origin) || !origin) {
-      callback(null, true);
-    } else {
-      console.log(`⚠️ CORS bloqueado: ${origin}`);
-      callback(null, true);
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token', 'X-Requested-With']
+    origin: function(origin, callback) {
+        if (!origin && NODE_ENV !== 'production') return callback(null, true);
+        if (allowedOrigins.includes(origin) || !origin) return callback(null, true);
+        console.log(`⚠️ CORS bloqueado: ${origin}`);
+        return callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token']
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* ════════════════════════════════════════════════════════════
-   🗄️ BASE DE DATOS EN MEMORIA (Demo)
-════════════════════════════════════════════════════════════ */
-let DB = {
-  ordenes: [],
-  usuarios: [],
-  transacciones: [],
-  productos: [],
-  afiliados: [],
-  trafico: [],
-  contadorVisitas: 0
-};
-
-/* ════════════════════════════════════════════════════════════
-   📦 CATEGORÍAS DISPONIBLES
+   📦 CATEGORÍAS
 ════════════════════════════════════════════════════════════ */
 const CATEGORIAS = [
-  'Celulares y Accesorios','Tecnología','Ropa de mujer','Ropa íntima','Ropa de hombre',
-  'Accesorios de mujer','Accesorios de hombre','Calzado de mujer','Calzado de Hombre',
-  'Belleza','Perfumes','Joyería y relojes','Juguetes','Ropa de niños','Calzado de niños',
-  'Hogar y jardín','Consolas y videojuegos','Equipo de gym','Mascotas y accesorios',
-  'Herramientas y accesorios de Auto','General'
+    'Celulares y Accesorios', 'Tecnología', 'Ropa de mujer', 'Ropa íntima', 'Ropa de hombre',
+    'Accesorios de mujer', 'Accesorios de hombre', 'Calzado de mujer', 'Calzado de Hombre',
+    'Belleza', 'Perfumes', 'Joyería y relojes', 'Juguetes', 'Ropa de niños', 'Calzado de niños',
+    'Hogar y jardín', 'Consolas y videojuegos', 'Equipo de gym', 'Mascotas y accesorios',
+    'Herramientas y accesorios de Auto', 'General'
 ];
 
-/* ════════════════════════════════════════════════════════════
-   🔧 UTILIDADES
-════════════════════════════════════════════════════════════ */
-function detectarCategoria(nombre = '', descripcion = '', categoriaRaw = '') {
-  const txt = (nombre + ' ' + descripcion + ' ' + categoriaRaw).toLowerCase();
-  const mapa = [
-    ['Celulares y Accesorios',['celular','movil','iphone','samsung','xiaomi','funda','cargador','cable','smartphone','earphone','earbuds','audifonos']],
-    ['Tecnología',['computadora','laptop','tablet','teclado','mouse','monitor','drone','camara','smartwatch','bluetooth','wifi','router','usb','hdmi']],
-    ['Ropa de mujer',['vestido','blusa','falda','leggings','women','femenino','mujer','dress','skirt']],
-    ['Ropa íntima',['lencería','bragas','bra','boxer','ropa interior','intimo','panty']],
-    ['Ropa de hombre',['camisa','pantalon','saco','corbata','traje','men','hombre','shirt','jacket']],
-    ['Accesorios de mujer',['bolso','cartera','collar','aretes','pulsera','diadema']],
-    ['Accesorios de hombre',['cinturón','billetera','reloj hombre','gorra','guantes']],
-    ['Calzado de mujer',['tacón','stiletto','ballerina','sandalia mujer','zapato mujer']],
-    ['Calzado de Hombre',['zapato hombre','tenis hombre','bota hombre','loafer']],
-    ['Belleza',['maquillaje','cosmetico','crema','labial','skincare','facial','serum']],
-    ['Perfumes',['perfume','colonia','fragancia','eau de']],
-    ['Joyería y relojes',['reloj','pulsera','collar','anillo','aretes','watch','joya']],
-    ['Juguetes',['juguete','toy','muñeca','peluche','lego','robot','armable']],
-    ['Ropa de niños',['niño','niña','kids','children','bebe','baby','infantil']],
-    ['Calzado de niños',['zapato niño','tenis niño','baby shoes','calzado infantil']],
-    ['Hogar y jardín',['hogar','cocina','jardin','lampara','decoracion','mueble','cortina']],
-    ['Consolas y videojuegos',['playstation','xbox','nintendo','switch','videojuego','game','consola','ps4','ps5']],
-    ['Equipo de gym',['gym','pesas','mancuerna','fitness','yoga','ejercicio','banda','mat']],
-    ['Mascotas y accesorios',['perro','gato','mascota','pet','correa','comedero','rascador']],
-    ['Herramientas y accesorios de Auto',['herramienta','auto','coche','llanta','aceite','bateria','faro']]
-  ];
-  for (const [cat, kws] of mapa) { if (kws.some(k => txt.includes(k))) return cat; }
-  return 'General';
-}
-
-function parsearVariantesCJ(variantList = []) {
-  const tallas = new Set(), colores = new Set(), medidas = [];
-  for (const v of variantList) {
-    const props = v.variantNameEn || v.variantName || '';
-    if (typeof props === 'string') {
-      const partes = props.split(';');
-      for (const p of partes) {
-        const [key, val] = p.split(':').map(s => s?.trim());
-        if (!val) continue;
-        const k = (key || '').toLowerCase();
-        if (k.includes('size') || k.includes('talla')) tallas.add(val);
-        else if (k.includes('color')) colores.add(val);
-      }
+function detectarCategoria(nombre = '', descripcion = '') {
+    const txt = (nombre + ' ' + descripcion).toLowerCase();
+    const mapa = [
+        ['Celulares y Accesorios', ['celular', 'iphone', 'samsung', 'funda', 'cargador']],
+        ['Tecnología', ['computadora', 'laptop', 'tablet', 'teclado', 'mouse']],
+        ['Ropa de mujer', ['vestido', 'blusa', 'falda', 'mujer']],
+        ['Ropa de hombre', ['camisa', 'pantalon', 'hombre']]
+    ];
+    for (const [cat, kws] of mapa) {
+        if (kws.some(k => txt.includes(k))) return cat;
     }
-    if (v.variantLength || v.variantWidth || v.variantHeight) {
-      medidas.push(`${v.variantLength||0}×${v.variantWidth||0}×${v.variantHeight||0} cm`);
-    }
-  }
-  return { tallas: [...tallas].join(', '), colores: [...colores].join(', '), medidas: [...new Set(medidas)].join(' | ') };
+    return 'General';
 }
 
 const generarId = () => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
 /* ════════════════════════════════════════════════════════════
-   🌐 PROVEEDORES
-════════════════════════════════════════════════════════════ */
-const PROVIDERS = {
-  cj: {
-    id: 'cj', name: 'CJ Dropshipping', color: '#7c3aed', type: 'api', hasApi: true,
-    description: 'Millones de productos globales', categories: [],
-    fetchProduct: async (sku) => {
-      if (!CJ_API_KEY) throw new Error('CJ_API_KEY no configurada en Render');
-      const token = await getCJToken();
-      const listRes = await fetch(`${CJ_API_URL}/product/list?productSku=${encodeURIComponent(sku)}&pageNum=1&pageSize=1`, {
-        method: 'GET', headers: { 'CJ-Access-Token': token, 'Content-Type': 'application/json' }
-      });
-      const listData = await listRes.json();
-      if (listData.code !== 200 || !listData.data?.list?.length) throw new Error(`Producto ${sku} no encontrado en CJ`);
-      const p = listData.data.list[0];
-      let imagenes = p.productImage ? [p.productImage] : [], descripcion = p.productNameEn || p.productName || '';
-      let tallas = '', colores = '', medidas = '', rating = parseFloat(p.productRating || 4.5), totalReviews = parseInt(p.reviewsCount || 0, 10);
-      try {
-        const detRes = await fetch(`${CJ_API_URL}/product/query?pid=${p.pid}`, {
-          method: 'GET', headers: { 'CJ-Access-Token': token, 'Content-Type': 'application/json' }
-        });
-        const detData = await detRes.json();
-        if (detData.code === 200 && detData.data) {
-          const d = detData.data;
-          if (d.productImageSet) imagenes = d.productImageSet.split(',').map(s => s.trim()).filter(Boolean);
-          if (d.productDescription || d.description) descripcion = d.productDescription || d.description;
-          if (d.reviewsRating) rating = parseFloat(d.reviewsRating);
-          if (d.reviewsCount) totalReviews = parseInt(d.reviewsCount, 10);
-          if (d.variants?.length) { const parsed = parsearVariantesCJ(d.variants); tallas = parsed.tallas; colores = parsed.colores; medidas = parsed.medidas; }
-        }
-      } catch (e) { console.warn('⚠️ Error detalle CJ:', e.message); }
-      if (!imagenes.length) imagenes = ['https://picsum.photos/500/500?random=1'];
-      const nombre = p.productNameEn || p.productName || `Producto ${sku}`;
-      return { sku, nombre, descripcion, imagenes, stock: p.inventory || 100, tallas, colores, medidas, rating, totalReviews, categoria: detectarCategoria(nombre, descripcion, p.categoryName || ''), proveedor: 'CJ Dropshipping', modoHybrid: false, cjPid: p.pid };
-    }
-  },
-  sunsky: {
-    id: 'sunsky', name: 'SunSky', color: '#f97316', type: 'api', hasApi: true,
-    description: 'Electrónica y gadgets', categories: ['Tecnología','Celulares y Accesorios'],
-    fetchProduct: async (sku) => {
-      if (!SUNSKY_API_KEY || !SUNSKY_API_SECRET) {
-        console.warn('⚠️ SunSky: API keys no configuradas');
-        return { sku, nombre: '', descripcion: '', imagenes: [], stock: 100, tallas: '', colores: '', medidas: '', rating: 0, totalReviews: 0, categoria: 'Tecnología', proveedor: 'SunSky', modoHybrid: true };
-      }
-      
-      try {
-        const params = { itemNo: sku };
-        const keys = Object.keys(params).sort();
-        let stringToSign = '';
-        for (const key of keys) {
-          stringToSign += params[key];
-        }
-        stringToSign += SUNSKY_API_KEY;
-        stringToSign += '@' + SUNSKY_API_SECRET;
-        const signature = crypto.createHash('md5').update(stringToSign).digest('hex');
-        
-        const url = `${SUNSKY_BASE_URL}/openapi/product!detail.do`;
-        const queryParams = new URLSearchParams();
-        queryParams.append('itemNo', sku);
-        queryParams.append('key', SUNSKY_API_KEY);
-        queryParams.append('signature', signature);
-        
-        console.log(`🔍 SunSky API: Buscando SKU ${sku}`);
-        const response = await fetch(`${url}?${queryParams.toString()}`, { method: 'GET' });
-        const data = await response.json();
-        
-        if (data.result !== 'success' || !data.data) {
-          throw new Error(data.messages?.[0] || 'Producto no encontrado en SunSky');
-        }
-        
-        const product = data.data;
-        const nombre = product.name || `Producto ${sku}`;
-        const descripcion = product.description || nombre;
-        
-        let imagenes = [];
-        if (product.picCount && product.picCount > 0) {
-          for (let i = 1; i <= Math.min(product.picCount, 10); i++) {
-            imagenes.push(`https://img.sunsky-online.com/images/product/${product.itemNo}/${i}.jpg`);
-          }
-        }
-        if (product.images && Array.isArray(product.images) && product.images.length) {
-          imagenes = product.images.map(img => img.url || img).filter(Boolean);
-        }
-        if (product.imgList && Array.isArray(product.imgList) && product.imgList.length) {
-          imagenes = product.imgList.map(img => img.url || img).filter(Boolean);
-        }
-        if (product.mainImage) imagenes.push(product.mainImage);
-        if (product.mainImg) imagenes.push(product.mainImg);
-        if (product.pictureUrl) imagenes.push(product.pictureUrl);
-        if (product.picUrl) imagenes.push(product.picUrl);
-        
-        if (imagenes.length === 0) {
-          console.log(`⚠️ No se encontraron imágenes para ${sku}, usando placeholder`);
-          imagenes = [`https://picsum.photos/seed/${sku}/400/400`];
-        }
-        
-        console.log(`📸 Imágenes obtenidas para ${sku}: ${imagenes.length} imagen(es)`);
-        
-        let tallas = '', colores = '';
-        if (product.modelList && product.modelList.length) {
-          const variantes = product.modelList.map(m => m.value);
-          if (product.modelLabel?.toLowerCase().includes('color')) {
-            colores = variantes.join(', ');
-          } else if (product.modelLabel?.toLowerCase().includes('size')) {
-            tallas = variantes.join(', ');
-          } else {
-            tallas = variantes.join(', ');
-          }
-        }
-        
-        return {
-          sku: product.itemNo,
-          nombre,
-          descripcion,
-          imagenes,
-          stock: product.stock || 100,
-          tallas,
-          colores,
-          medidas: '',
-          rating: 4.5,
-          totalReviews: 0,
-          categoria: detectarCategoria(nombre, descripcion, ''),
-          proveedor: 'SunSky',
-          modoHybrid: false,
-          precioProveedor: parseFloat(product.price) || 0,
-          moneda: 'USD'
-        };
-      } catch (error) {
-        console.error('❌ Error en SunSky API:', error.message);
-        return { 
-          sku, nombre: '', descripcion: '', imagenes: [], stock: 100, 
-          tallas: '', colores: '', medidas: '', rating: 0, totalReviews: 0, 
-          categoria: 'Tecnología', proveedor: 'SunSky', modoHybrid: true 
-        };
-      }
-    }
-  },
-  tvccmall: { id: 'tvccmall', name: 'TVCmall', color: '#0ea5e9', type: 'hybrid', hasApi: false, description: 'Accesorios móviles', categories: ['Celulares y Accesorios','Tecnología'], fetchProduct: async (sku) => ({ sku, nombre:'', descripcion:'', imagenes:[], stock:200, tallas:'', colores:'', medidas:'', rating:0, totalReviews:0, categoria:'Celulares y Accesorios', proveedor:'TVCmall', modoHybrid:true }) },
-  apparelcn: { id: 'apparelcn', name: 'ApparelCN', color: '#ec4899', type: 'hybrid', hasApi: false, description: 'Ropa mayorista', categories: ['Ropa de mujer','Ropa de hombre'], fetchProduct: async (sku) => ({ sku, nombre:'', descripcion:'', imagenes:[], stock:100, tallas:'S,M,L,XL', colores:'', medidas:'', rating:0, totalReviews:0, categoria:'Ropa de mujer', proveedor:'ApparelCN', modoHybrid:true }) }
-};
-
-/* ════════════════════════════════════════════════════════════
-   🔑 TOKEN CJ (caché con refresh automático)
+   🔑 TOKEN CJ
 ════════════════════════════════════════════════════════════ */
 let cjAccessToken = null, cjTokenExpiry = null, cjTokenPromise = null;
 
 async function getCJToken() {
-  if (cjAccessToken && cjTokenExpiry && new Date() < new Date(cjTokenExpiry)) return cjAccessToken;
-  if (cjTokenPromise) return cjTokenPromise;
-  console.log('🔐 Obteniendo token CJ...');
-  cjTokenPromise = (async () => {
-    try {
-      const response = await fetch(`${CJ_API_URL}/authentication/getAccessToken`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ apiKey: CJ_API_KEY })
-      });
-      const data = await response.json();
-      if (data.code === 200 && data.data?.accessToken) {
-        cjAccessToken = data.data.accessToken;
-        cjTokenExpiry = data.data.accessTokenExpiryDate;
-        console.log('✅ Token CJ obtenido');
-        return cjAccessToken;
-      }
-      throw new Error(`Error CJ: ${data.message}`);
-    } finally { cjTokenPromise = null; }
-  })();
-  return cjTokenPromise;
+    if (!CJ_API_KEY) throw new Error('CJ_API_KEY no configurada');
+    if (cjAccessToken && cjTokenExpiry && new Date() < new Date(cjTokenExpiry)) return cjAccessToken;
+    if (cjTokenPromise) return cjTokenPromise;
+    
+    cjTokenPromise = (async () => {
+        const response = await fetch(`${CJ_API_URL}/authentication/getAccessToken`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey: CJ_API_KEY })
+        });
+        const data = await response.json();
+        if (data.code === 200 && data.data?.accessToken) {
+            cjAccessToken = data.data.accessToken;
+            cjTokenExpiry = data.data.accessTokenExpiryDate;
+            return cjAccessToken;
+        }
+        throw new Error(`Error CJ: ${data.message}`);
+    })();
+    return cjTokenPromise;
 }
 
 /* ════════════════════════════════════════════════════════════
    🚦 RUTAS BASE
 ════════════════════════════════════════════════════════════ */
-app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend Activo', port: PORT, version: '2.5.0', env: NODE_ENV }));
-app.get('/health', (req, res) => res.json({ status: 'healthy', port: PORT, time: Date.now(), uptime: process.uptime() }));
-app.get('/api/status', (req, res) => res.json({ success: true, cjConfigured: !!CJ_API_KEY, sunskyConfigured: !!SUNSKY_API_KEY, firestoreConfigured: !!firestore, emailConfigured: emailConfigurado, timestamp: Date.now() }));
+app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend v3.0', env: NODE_ENV }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', firestore: !!firestore, timestamp: Date.now() }));
+app.get('/api/status', (req, res) => res.json({ success: true, firestore: !!firestore, email: emailConfigurado }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
 
 /* ════════════════════════════════════════════════════════════
-   📊 TRACKING DE VISITAS
+   🔑 RUTA PARA OBTENER CLAVES PÚBLICAS (NUEVA - para el frontend)
 ════════════════════════════════════════════════════════════ */
-app.post('/api/tracking/visita', (req, res) => {
-  const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
-  DB.contadorVisitas++;
-  DB.trafico.push({ pagina, origen, dispositivo, fecha: new Date().toISOString(), ip: req.ip });
-  if (DB.trafico.length > 10000) DB.trafico.shift();
-  console.log(`📊 Visita registrada: ${pagina} | ${origen} | ${dispositivo} | Total: ${DB.contadorVisitas}`);
-  res.json({ success: true, message: 'Visita registrada', total: DB.contadorVisitas });
-});
-
-/* ════════════════════════════════════════════════════════════
-   🌐 RUTAS CJ DROPSHIPPING
-════════════════════════════════════════════════════════════ */
-app.get('/api/cj/test', (req, res) => res.json({ success: true, message: 'CJ endpoint OK' }));
-
-app.post('/api/cj/buscar', async (req, res) => {
-  const { sku } = req.body;
-  if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
-  try {
-    const token = await getCJToken();
-    const response = await fetch(`${CJ_API_URL}/product/list?productSku=${encodeURIComponent(sku)}&pageNum=1&pageSize=1`, { method: 'GET', headers: { 'CJ-Access-Token': token } });
-    const data = await response.json();
-    if (data.code === 200 && data.data?.list?.length > 0) {
-      const p = data.data.list[0];
-      res.json({ success: true, product: { pid: p.pid, sku: p.sku, nombre: p.productName, precio: p.sellPrice, stock: p.inventory || 100, imagenes: p.productImage ? [p.productImage] : [] } });
-    } else throw new Error(`Producto ${sku} no encontrado`);
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
-});
-
-app.post('/api/cj/import', async (req, res) => {
-  let { sku, precioVenta, costoCJ, tipo, categoria } = req.body;
-  if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
-  sku = sku.split('-')[0];
-  console.log(`📦 IMPORTANDO CJ: ${sku}`);
-  try {
-    const token = await getCJToken();
-    const listRes = await fetch(`${CJ_API_URL}/product/list?productSku=${encodeURIComponent(sku)}&pageNum=1&pageSize=1`, { method: 'GET', headers: { 'CJ-Access-Token': token } });
-    const listData = await listRes.json();
-    if (listData.code !== 200 || !listData.data?.list?.length) throw new Error(`Producto ${sku} no encontrado`);
-    const producto = listData.data.list[0];
-    let imagenes = producto.productImage ? [producto.productImage] : [], descripcion = producto.productNameEn || producto.productName || '';
-    let tallas = '', colores = '', medidas = '', rating = parseFloat(producto.productRating || 4.5), totalReviews = parseInt(producto.reviewsCount || 0, 10);
-    try {
-      const detRes = await fetch(`${CJ_API_URL}/product/query?pid=${producto.pid}`, { method: 'GET', headers: { 'CJ-Access-Token': token } });
-      const detData = await detRes.json();
-      if (detData.code === 200 && detData.data) {
-        const d = detData.data;
-        if (d.productImageSet) imagenes = d.productImageSet.split(',').map(s => s.trim()).filter(Boolean);
-        if (d.productDescription || d.description) descripcion = d.productDescription || d.description;
-        if (d.reviewsRating) rating = parseFloat(d.reviewsRating);
-        if (d.reviewsCount) totalReviews = parseInt(d.reviewsCount, 10);
-        if (d.variants?.length) { const parsed = parsearVariantesCJ(d.variants); tallas = parsed.tallas; colores = parsed.colores; medidas = parsed.medidas; }
-      }
-    } catch (e) { console.warn('⚠️ Error detalle CJ:', e.message); }
-    if (!imagenes.length) imagenes = ['https://picsum.photos/500/500?random=1'];
-    const descuento = Math.floor(Math.random() * 20) + 5;
-    const precioOriginal = parseFloat(precioVenta) / (1 - descuento / 100);
-    const nombre = producto.productNameEn || producto.productName || `Producto ${sku}`;
-    const categoriaFinal = categoria && CATEGORIAS.includes(categoria) ? categoria : detectarCategoria(nombre, descripcion, producto.categoryName || '');
-    const productoFinal = {
-      id: producto.pid, sku, nombre, descripcion, categoria: categoriaFinal,
-      precioOriginal: Math.round(precioOriginal), precioFinal: parseFloat(precioVenta),
-      costoCJ: parseFloat(costoCJ) || 0, descuento, stock: producto.inventory || 100, tipo: tipo || 'Ofertas',
-      rating, totalReviews, imagenes, tallas, colores, medidas,
-      proveedor: 'CJ Dropshipping', cjData: { pid: producto.pid, sku },
-      fechaCreacion: new Date().toISOString()
-    };
-    DB.productos.push(productoFinal);
-    
-    if (firestore) {
-      try {
-        await firestore.collection('productos').add(productoFinal);
-        console.log(`✅ Producto CJ guardado en Firestore: ${nombre}`);
-      } catch (firestoreError) {
-        console.error('❌ Error guardando en Firestore:', firestoreError.message);
-      }
-    }
-    
-    res.json({ success: true, message: 'Producto importado', product: productoFinal });
-  } catch (error) { console.error('❌ Error:', error.message); res.status(500).json({ success: false, error: error.message }); }
-});
-
-/* ════════════════════════════════════════════════════════════
-   🌐 RUTAS SUNSKY
-════════════════════════════════════════════════════════════ */
-app.post('/api/sunsky/buscar', async (req, res) => {
-  const { sku } = req.body;
-  if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
-  try {
-    const provider = PROVIDERS.sunsky;
-    const product = await provider.fetchProduct(sku);
-    if (!product.nombre) {
-      return res.status(404).json({ success: false, error: `Producto ${sku} no encontrado en SunSky` });
-    }
-    res.json({ 
-      success: true, 
-      product: {
-        sku: product.sku,
-        nombre: product.nombre,
-        precio: product.precioProveedor,
-        stock: product.stock,
-        imagenes: product.imagenes,
-        descripcion: product.descripcion,
-        tallas: product.tallas,
-        colores: product.colores,
-        medidas: product.medidas,
-        rating: product.rating,
-        categoria: product.categoria
-      }
+app.get('/api/config', (req, res) => {
+    res.json({
+        success: true,
+        stripePublicKey: process.env.STRIPE_PUBLIC_KEY || null,
+        mercadoPagoPublicKey: process.env.MERCADO_PAGO_PUBLIC_KEY || null,
+        paypalClientId: process.env.PAYPAL_CLIENT_ID || null
     });
-  } catch (error) {
-    console.error('❌ Error SunSky:', error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
 });
 
-app.post('/api/sunsky/import', async (req, res) => {
-  let { sku, precioVenta, tipo, categoria } = req.body;
-  if (!sku) return res.status(400).json({ success: false, error: 'SKU requerido' });
-  try {
-    const provider = PROVIDERS.sunsky;
-    const product = await provider.fetchProduct(sku);
-    if (!product.nombre) {
-      throw new Error(`Producto ${sku} no encontrado en SunSky`);
-    }
-    const descuento = Math.floor(Math.random() * 20) + 5;
-    const precioOriginal = parseFloat(precioVenta) / (1 - descuento / 100);
-    const productoFinal = {
-      id: `SUN_${Date.now()}_${sku}`,
-      sku: product.sku,
-      nombre: product.nombre,
-      descripcion: product.descripcion,
-      categoria: categoria && CATEGORIAS.includes(categoria) ? categoria : product.categoria,
-      precioOriginal: Math.round(precioOriginal),
-      precioFinal: parseFloat(precioVenta),
-      costoProveedor: product.precioProveedor || 0,
-      descuento,
-      stock: product.stock || 100,
-      tipo: tipo || 'Especiales',
-      rating: product.rating || 4.5,
-      totalReviews: product.totalReviews || 0,
-      imagenes: product.imagenes,
-      tallas: product.tallas,
-      colores: product.colores,
-      medidas: product.medidas,
-      proveedor: 'SunSky',
-      sunskyData: { sku: product.sku },
-      fechaCreacion: new Date().toISOString()
-    };
-    DB.productos.push(productoFinal);
+/* ════════════════════════════════════════════════════════════
+   📊 TRACKING (GUARDADO EN FIRESTORE)
+════════════════════════════════════════════════════════════ */
+app.post('/api/tracking/visita', async (req, res) => {
+    const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
+    if (!firestore) return res.json({ success: true, message: 'Tracking omitido' });
     
-    if (firestore) {
-      try {
+    try {
+        await firestore.collection('trafico').add({
+            pagina, origen, dispositivo,
+            fecha: new Date().toISOString(),
+            ip: req.ip
+        });
+        res.json({ success: true, message: 'Visita registrada' });
+    } catch (error) {
+        console.error('Error tracking:', error.message);
+        res.json({ success: true, message: 'Error en tracking' });
+    }
+});
+
+/* ════════════════════════════════════════════════════════════
+   🌐 RUTAS CJ
+════════════════════════════════════════════════════════════ */
+app.post('/api/cj/import', async (req, res) => {
+    let { sku, precioVenta, costoCJ, tipo, categoria } = req.body;
+    if (!sku || !precioVenta) {
+        return res.status(400).json({ success: false, error: 'SKU y precioVenta requeridos' });
+    }
+    
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    try {
+        const token = await getCJToken();
+        const listRes = await fetch(`${CJ_API_URL}/product/list?productSku=${encodeURIComponent(sku)}&pageNum=1&pageSize=1`, {
+            headers: { 'CJ-Access-Token': token }
+        });
+        const listData = await listRes.json();
+        
+        if (listData.code !== 200 || !listData.data?.list?.length) {
+            throw new Error(`Producto ${sku} no encontrado`);
+        }
+        
+        const producto = listData.data.list[0];
+        const nombre = producto.productNameEn || producto.productName || `Producto ${sku}`;
+        const imagenes = producto.productImage ? [producto.productImage] : ['https://picsum.photos/500/500'];
+        
+        const productoFinal = {
+            sku,
+            nombre,
+            descripcion: producto.productDescription || '',
+            categoria: categoria || detectarCategoria(nombre, ''),
+            precioFinal: parseFloat(precioVenta),
+            precioOriginal: parseFloat(precioVenta) * 1.15,
+            descuento: 13,
+            stock: producto.inventory || 100,
+            tipo: tipo || 'Ofertas',
+            rating: 4.5,
+            imagenes,
+            tallas: '',
+            colores: '',
+            medidas: '',
+            proveedor: 'CJ Dropshipping',
+            fechaCreacion: new Date().toISOString()
+        };
+        
         const docRef = await firestore.collection('productos').add(productoFinal);
-        console.log(`✅ Producto SunSky guardado en Firestore con ID: ${docRef.id} - ${product.nombre}`);
-      } catch (firestoreError) {
-        console.error('❌ Error guardando en Firestore:', firestoreError.message);
-      }
+        console.log(`✅ Producto CJ guardado: ${docRef.id}`);
+        
+        res.json({ success: true, message: 'Producto importado', id: docRef.id, product: productoFinal });
+    } catch (error) {
+        console.error('❌ Error CJ:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* ════════════════════════════════════════════════════════════
+   📦 ÓRDENES (TODO EN FIRESTORE)
+════════════════════════════════════════════════════════════ */
+app.get('/api/admin/ordenes', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        const { estado, page = 1, limit = 20 } = req.query;
+        let query = firestore.collection('pedidos');
+        
+        if (estado) query = query.where('estado', '==', estado);
+        
+        const snapshot = await query.orderBy('fechaCreacion', 'desc').limit(parseInt(limit)).get();
+        const ordenes = [];
+        snapshot.forEach(doc => ordenes.push({ id: doc.id, ...doc.data() }));
+        
+        res.json({ success: true, total: ordenes.length, ordenes });
+    } catch (error) {
+        console.error('Error obteniendo órdenes:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.patch('/api/admin/ordenes/:id/estado', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    const { estado } = req.body;
+    const validos = ['pendiente', 'pagado', 'enviado', 'cancelado'];
+    if (!validos.includes(estado)) {
+        return res.status(400).json({ success: false, error: 'Estado inválido' });
     }
     
-    res.json({ success: true, message: 'Producto importado desde SunSky', product: productoFinal });
-  } catch (error) {
-    console.error('❌ Error importando SunSky:', error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-/* ════════════════════════════════════════════════════════════
-   📧 RUTA PARA ENVÍO DE EMAIL DE CONFIRMACIÓN
-════════════════════════════════════════════════════════════ */
-app.post('/api/send-confirmation', async (req, res) => {
-  const { orderId, customerEmail, customerName, total, items, shippingAddress, paymentMethod, date } = req.body;
-  
-  if (!orderId || !customerEmail || !customerName) {
-    return res.status(400).json({ success: false, error: 'Faltan datos requeridos para enviar email' });
-  }
-  
-  console.log(`📧 Solicitando envío de email para orden ${orderId} a ${customerEmail}`);
-  
-  const result = await sendConfirmationEmail({
-    orderId,
-    customerEmail,
-    customerName,
-    total,
-    items: items || [],
-    shippingAddress,
-    paymentMethod,
-    date: date || new Date().toISOString()
-  });
-  
-  if (result) {
-    res.json({ success: true, message: 'Email de confirmación enviado' });
-  } else {
-    res.status(500).json({ success: false, error: 'No se pudo enviar el email' });
-  }
-});
-
-/* ════════════════════════════════════════════════════════════
-   📦 ÓRDENES (ACTUALIZADO para enviar email automáticamente)
-════════════════════════════════════════════════════════════ */
-app.get('/api/admin/ordenes', (req, res) => {
-  const { estado, page = 1, limit = 20 } = req.query;
-  let ordenes = [...DB.ordenes];
-  if (estado) ordenes = ordenes.filter(o => o.estado === estado);
-  ordenes.sort((a, b) => new Date(b.fechaCreacion) - new Date(a.fechaCreacion));
-  const total = ordenes.length, inicio = (page - 1) * limit;
-  res.json({ success: true, total, page: Number(page), limit: Number(limit), ordenes: ordenes.slice(inicio, inicio + Number(limit)) });
-});
-
-app.patch('/api/admin/ordenes/:id/estado', (req, res) => {
-  const { estado } = req.body;
-  const validos = ['pendiente','pagado','enviado','cancelado'];
-  if (!validos.includes(estado)) return res.status(400).json({ success: false, error: 'Estado inválido' });
-  const idx = DB.ordenes.findIndex(o => o.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ success: false, error: 'Orden no encontrada' });
-  DB.ordenes[idx].estado = estado;
-  DB.ordenes[idx].fechaActualizacion = new Date().toISOString();
-  res.json({ success: true, orden: DB.ordenes[idx] });
+    try {
+        const ordenRef = firestore.collection('pedidos').doc(req.params.id);
+        const ordenDoc = await ordenRef.get();
+        
+        if (!ordenDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Orden no encontrada' });
+        }
+        
+        await ordenRef.update({ estado, fechaActualizacion: new Date().toISOString() });
+        res.json({ success: true, mensaje: 'Estado actualizado' });
+    } catch (error) {
+        console.error('Error actualizando estado:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 app.post('/api/admin/ordenes', async (req, res) => {
-  const { usuario, items, direccion, total, pasarela, proveedorId, customerEmail } = req.body;
-  if (!items?.length || !total) return res.status(400).json({ success: false, error: 'items y total requeridos' });
-  
-  const ordenId = `ORD-${generarId()}`;
-  const orden = { 
-    id: ordenId, 
-    usuario: usuario || 'Invitado', 
-    items, 
-    direccion, 
-    total: parseFloat(total), 
-    pasarela: pasarela || 'Desconocida', 
-    proveedorId: proveedorId || 'cj', 
-    estado: 'pagado',
-    emailCliente: customerEmail || direccion?.email,
-    fechaCreacion: new Date().toISOString() 
-  };
-  DB.ordenes.push(orden);
-  DB.transacciones.push({ id: `TXN-${generarId()}`, ordenId: orden.id, monto: orden.total, pasarela: orden.pasarela, estado: 'pagado', fechaCreacion: orden.fechaCreacion });
-  
-  // Enviar email de confirmación automáticamente
-  if (customerEmail || direccion?.email) {
-    const emailEnviado = await sendConfirmationEmail({
-      orderId: orden.id,
-      customerEmail: customerEmail || direccion.email,
-      customerName: usuario || direccion?.nombre || 'Cliente',
-      total: orden.total,
-      items: items,
-      shippingAddress: direccion,
-      paymentMethod: pasarela,
-      date: orden.fechaCreacion
-    });
-    console.log(`📧 Email confirmación orden ${orden.id}: ${emailEnviado ? 'ENVIADO ✅' : 'FALLÓ ❌'}`);
-  } else {
-    console.log(`⚠️ No se pudo enviar email para orden ${orden.id}: falta email del cliente`);
-  }
-  
-  res.json({ success: true, orden });
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    const { usuario, items, direccion, total, pasarela, customerEmail } = req.body;
+    
+    if (!items?.length || !total) {
+        return res.status(400).json({ success: false, error: 'items y total requeridos' });
+    }
+    
+    try {
+        const ordenId = `ORD-${generarId()}`;
+        const orden = {
+            id: ordenId,
+            usuario: usuario || 'Invitado',
+            items: items.map(item => ({
+                ...item,
+                precio: item.precioFinal || item.precio || 0
+            })),
+            direccion: direccion || {},
+            total: parseFloat(total),
+            pasarela: pasarela || 'Desconocida',
+            estado: 'pagado',
+            emailCliente: customerEmail || direccion?.email,
+            fechaCreacion: new Date().toISOString()
+        };
+        
+        await firestore.collection('pedidos').doc(ordenId).set(orden);
+        
+        // Registrar transacción
+        await firestore.collection('transacciones').add({
+            ordenId,
+            monto: orden.total,
+            pasarela: orden.pasarela,
+            estado: 'pagado',
+            fechaCreacion: new Date().toISOString()
+        });
+        
+        // Enviar email si hay email
+        if (orden.emailCliente) {
+            await sendConfirmationEmail({
+                orderId: orden.id,
+                customerEmail: orden.emailCliente,
+                customerName: usuario || 'Cliente',
+                total: orden.total,
+                items: orden.items,
+                shippingAddress: direccion,
+                paymentMethod: pasarela,
+                date: orden.fechaCreacion
+            });
+        }
+        
+        res.json({ success: true, orden });
+    } catch (error) {
+        console.error('Error creando orden:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 /* ════════════════════════════════════════════════════════════
-   👥 USUARIOS
+   👥 USUARIOS (FIRESTORE)
 ════════════════════════════════════════════════════════════ */
-app.post('/api/admin/usuarios', (req, res) => {
-  const { email, nombre, telefono } = req.body;
-  if (!email) return res.status(400).json({ success: false, error: 'email requerido' });
-  const idx = DB.usuarios.findIndex(u => u.email === email);
-  if (idx >= 0) { DB.usuarios[idx].nombre = nombre || DB.usuarios[idx].nombre; DB.usuarios[idx].telefono = telefono || DB.usuarios[idx].telefono; DB.usuarios[idx].compras = (DB.usuarios[idx].compras || 0) + 1; DB.usuarios[idx].ultimaCompra = new Date().toISOString(); return res.json({ success: true, usuario: DB.usuarios[idx] }); }
-  const usuario = { id: `USR-${generarId()}`, email, nombre: nombre || email, telefono: telefono || '', compras: 1, ultimaCompra: new Date().toISOString(), fechaRegistro: new Date().toISOString() };
-  DB.usuarios.push(usuario);
-  res.json({ success: true, usuario });
+app.post('/api/admin/usuarios', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    const { email, nombre, telefono } = req.body;
+    if (!email) return res.status(400).json({ success: false, error: 'email requerido' });
+    
+    try {
+        const usuariosRef = firestore.collection('clientes');
+        const existing = await usuariosRef.where('email', '==', email).get();
+        
+        if (!existing.empty) {
+            const doc = existing.docs[0];
+            await doc.ref.update({
+                nombre: nombre || doc.data().nombre,
+                telefono: telefono || doc.data().telefono,
+                compras: (doc.data().compras || 0) + 1,
+                ultimaCompra: new Date().toISOString()
+            });
+            return res.json({ success: true, usuario: { id: doc.id, ...doc.data() } });
+        }
+        
+        const usuario = {
+            email,
+            nombre: nombre || email.split('@')[0],
+            telefono: telefono || '',
+            compras: 1,
+            ultimaCompra: new Date().toISOString(),
+            fechaRegistro: new Date().toISOString()
+        };
+        
+        const docRef = await usuariosRef.add(usuario);
+        res.json({ success: true, usuario: { id: docRef.id, ...usuario } });
+    } catch (error) {
+        console.error('Error usuario:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
-app.get('/api/admin/usuarios', (req, res) => {
-  const { page = 1, limit = 20 } = req.query;
-  const total = DB.usuarios.length, inicio = (page - 1) * limit;
-  res.json({ success: true, total, page: Number(page), limit: Number(limit), usuarios: DB.usuarios.slice(inicio, inicio + Number(limit)) });
+app.get('/api/admin/usuarios', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        const snapshot = await firestore.collection('clientes').limit(50).get();
+        const usuarios = [];
+        snapshot.forEach(doc => usuarios.push({ id: doc.id, ...doc.data() }));
+        res.json({ success: true, usuarios });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 /* ════════════════════════════════════════════════════════════
-   💳 TRANSACCIONES
+   💳 TRANSACCIONES (FIRESTORE)
 ════════════════════════════════════════════════════════════ */
-app.get('/api/admin/transacciones', (req, res) => {
-  const { pasarela, page = 1, limit = 20 } = req.query;
-  let txns = [...DB.transacciones];
-  if (pasarela) txns = txns.filter(t => t.pasarela === pasarela);
-  txns.sort((a, b) => new Date(b.fechaCreacion) - new Date(a.fechaCreacion));
-  const total = txns.length, inicio = (page - 1) * limit;
-  res.json({ success: true, total, page: Number(page), limit: Number(limit), transacciones: txns.slice(inicio, inicio + Number(limit)) });
+app.get('/api/admin/transacciones', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        const snapshot = await firestore.collection('transacciones').orderBy('fechaCreacion', 'desc').limit(50).get();
+        const transacciones = [];
+        snapshot.forEach(doc => transacciones.push({ id: doc.id, ...doc.data() }));
+        res.json({ success: true, transacciones });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 /* ════════════════════════════════════════════════════════════
-   🛍️ PRODUCTOS
+   🛍️ PRODUCTOS (FIRESTORE)
 ════════════════════════════════════════════════════════════ */
-app.get('/api/admin/productos', (req, res) => {
-  const { categoria, page = 1, limit = 20 } = req.query;
-  let productos = [...DB.productos];
-  if (categoria) productos = productos.filter(p => p.categoria === categoria);
-  const total = productos.length, inicio = (page - 1) * limit;
-  res.json({ success: true, total, page: Number(page), limit: Number(limit), productos: productos.slice(inicio, inicio + Number(limit)) });
+app.get('/api/admin/productos', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        const snapshot = await firestore.collection('productos').limit(100).get();
+        const productos = [];
+        snapshot.forEach(doc => productos.push({ id: doc.id, ...doc.data() }));
+        res.json({ success: true, productos });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
-app.patch('/api/admin/productos/:id', (req, res) => {
-  const idx = DB.productos.findIndex(p => p.id === req.params.id || p.sku === req.params.id);
-  if (idx === -1) return res.status(404).json({ success: false, error: 'Producto no encontrado' });
-  DB.productos[idx] = { ...DB.productos[idx], ...req.body, fechaActualizacion: new Date().toISOString() };
-  res.json({ success: true, producto: DB.productos[idx] });
+app.patch('/api/admin/productos/:id', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        const productRef = firestore.collection('productos').doc(req.params.id);
+        const productDoc = await productRef.get();
+        
+        if (!productDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Producto no encontrado' });
+        }
+        
+        await productRef.update({ ...req.body, fechaActualizacion: new Date().toISOString() });
+        res.json({ success: true, mensaje: 'Producto actualizado' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
-app.delete('/api/admin/productos/:id', (req, res) => {
-  const idx = DB.productos.findIndex(p => p.id === req.params.id || p.sku === req.params.id);
-  if (idx === -1) return res.status(404).json({ success: false, error: 'Producto no encontrado' });
-  DB.productos.splice(idx, 1);
-  res.json({ success: true, mensaje: 'Producto eliminado' });
+app.delete('/api/admin/productos/:id', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        await firestore.collection('productos').doc(req.params.id).delete();
+        res.json({ success: true, mensaje: 'Producto eliminado' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 /* ════════════════════════════════════════════════════════════
-   📈 DASHBOARD
+   📈 DASHBOARD (DESDE FIRESTORE)
 ════════════════════════════════════════════════════════════ */
-app.get('/api/admin/dashboard', (req, res) => {
-  const ahora = new Date(), hoy = ahora.toISOString().split('T')[0], mesAct = ahora.toISOString().substring(0, 7);
-  const ordenes = DB.ordenes, totalOrdenes = ordenes.length;
-  const ordenesHoy = ordenes.filter(o => o.fechaCreacion?.startsWith(hoy)).length;
-  const ordenesConvertidas = ordenes.filter(o => ['pagado','enviado'].includes(o.estado));
-  const montoTotal = ordenesConvertidas.reduce((s, o) => s + (o.total || 0), 0);
-  const costoTotal = DB.productos.reduce((s, p) => { const vendidas = ordenes.filter(o => o.items?.some(i => i.sku === p.sku)).length; return s + (p.costoCJ || p.costoProveedor || 0) * vendidas; }, 0);
-  const gananciaTotal = montoTotal - costoTotal;
-  const estadosConteo = { pendiente: 0, pagado: 0, enviado: 0, cancelado: 0 };
-  for (const o of ordenes) estadosConteo[o.estado] = (estadosConteo[o.estado] || 0) + 1;
-  const ventasPorMes = {};
-  for (let i = 11; i >= 0; i--) { const d = new Date(ahora); d.setMonth(d.getMonth() - i); ventasPorMes[d.toISOString().substring(0, 7)] = 0; }
-  for (const o of ordenesConvertidas) { const m = o.fechaCreacion?.substring(0, 7); if (m && ventasPorMes[m] !== undefined) ventasPorMes[m] += o.total || 0; }
-  const totalVisitas = DB.contadorVisitas, visitasHoy = DB.trafico.filter(t => t.fecha?.startsWith(hoy)).length;
-  const dispositivosConteo = {}, origenesConteo = {}, paginasConteo = {};
-  for (const t of DB.trafico) { dispositivosConteo[t.dispositivo] = (dispositivosConteo[t.dispositivo] || 0) + 1; origenesConteo[t.origen] = (origenesConteo[t.origen] || 0) + 1; paginasConteo[t.pagina] = (paginasConteo[t.pagina] || 0) + 1; }
-  const topPaginas = Object.entries(paginasConteo).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([pagina, visitas]) => ({ pagina, visitas }));
-  const pasarelasConteo = {};
-  for (const t of DB.transacciones) pasarelasConteo[t.pasarela] = (pasarelasConteo[t.pasarela] || 0) + (t.monto || 0);
-  const ventasPorProducto = {};
-  for (const o of ordenes) { for (const item of (o.items || [])) { if (!ventasPorProducto[item.sku]) ventasPorProducto[item.sku] = { sku: item.sku, nombre: item.nombre, ventas: 0, ingresos: 0 }; ventasPorProducto[item.sku].ventas += item.cantidad || 1; ventasPorProducto[item.sku].ingresos += (item.precio || 0) * (item.cantidad || 1); } }
-  const topProductos = Object.values(ventasPorProducto).sort((a, b) => b.ventas - a.ventas).slice(0, 10);
-  res.json({
-    success: true, timestamp: new Date().toISOString(),
-    resumen: { totalOrdenes, ordenesHoy, totalUsuarios: DB.usuarios.length, totalProductos: DB.productos.length, totalVisitas, visitasHoy, montoTotal: Math.round(montoTotal * 100) / 100, gananciaTotal: Math.round(gananciaTotal * 100) / 100, costoTotal: Math.round(costoTotal * 100) / 100 },
-    ordenes: { estados: estadosConteo, ventasPorMes },
-    finanzas: { montoTotal, gananciaTotal, costoTotal, margenPromedio: montoTotal > 0 ? Math.round((gananciaTotal / montoTotal) * 100) : 0, pasarelas: pasarelasConteo },
-    trafico: { totalVisitas, visitasHoy, dispositivos: dispositivosConteo, origenes: origenesConteo, topPaginas },
-    topProductos,
-    recentOrdenes: [...ordenes].sort((a, b) => new Date(b.fechaCreacion) - new Date(a.fechaCreacion)).slice(0, 5)
-  });
+app.get('/api/admin/dashboard', async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    
+    try {
+        const pedidosSnap = await firestore.collection('pedidos').get();
+        const ordenes = [];
+        pedidosSnap.forEach(doc => ordenes.push({ id: doc.id, ...doc.data() }));
+        
+        const totalOrdenes = ordenes.length;
+        const hoy = new Date().toISOString().split('T')[0];
+        const ordenesHoy = ordenes.filter(o => o.fechaCreacion?.startsWith(hoy)).length;
+        const montoTotal = ordenes.reduce((sum, o) => sum + (o.total || 0), 0);
+        
+        const productosSnap = await firestore.collection('productos').get();
+        const totalProductos = productosSnap.size;
+        
+        const usuariosSnap = await firestore.collection('clientes').get();
+        const totalUsuarios = usuariosSnap.size;
+        
+        const estados = { pendiente: 0, pagado: 0, enviado: 0, cancelado: 0 };
+        ordenes.forEach(o => estados[o.estado || 'pendiente']++);
+        
+        res.json({
+            success: true,
+            resumen: {
+                totalOrdenes,
+                ordenesHoy,
+                totalUsuarios,
+                totalProductos,
+                montoTotal
+            },
+            ordenes: { estados }
+        });
+    } catch (error) {
+        console.error('Error dashboard:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
 });
 
 /* ════════════════════════════════════════════════════════════
-   ℹ️ INFO Y 404
+   ℹ️ 404
 ════════════════════════════════════════════════════════════ */
-app.get('/api/providers/info', (req, res) => res.json({ success: true, proveedores_activos: Object.keys(PROVIDERS).length }));
-app.use((req, res) => res.status(404).json({ error: 'Endpoint no encontrado', path: req.path }));
-app.use((err, req, res, next) => { console.error('❌ Error:', err.stack); res.status(err.status || 500).json({ success: false, error: NODE_ENV === 'production' ? 'Error interno' : err.message }); });
+app.use((req, res) => res.status(404).json({ error: 'Endpoint no encontrado' }));
+app.use((err, req, res, next) => {
+    console.error('❌ Error:', err.stack);
+    res.status(500).json({ success: false, error: NODE_ENV === 'production' ? 'Error interno' : err.message });
+});
 
 /* ════════════════════════════════════════════════════════════
    🚀 ARRANQUE
 ════════════════════════════════════════════════════════════ */
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log('==================================================');
-  console.log('✅ Bonü Backend v2.5 — CON ENVÍO AUTOMÁTICO DE EMAILS');
-  console.log(`📡 Puerto: ${PORT} | 🔐 CJ: ${CJ_API_KEY ? '✅' : '⚠️'} | ☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '⚠️'} | 🔥 Firestore: ${firestore ? '✅' : '⚠️'}`);
-  console.log(`📧 Email: ${emailConfigurado ? '✅ Configurado' : '⚠️ NO CONFIGURADO'}`);
-  console.log(`🌐 CORS permitidos: ${allowedOrigins.join(', ')}`);
-  console.log('==================================================');
+    console.log('==================================================');
+    console.log('✅ Bonü Backend v3.0 - PRODUCCIÓN (Todo en Firestore)');
+    console.log(`📡 Puerto: ${PORT}`);
+    console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
+    console.log(`📧 Email: ${emailConfigurado ? '✅' : '⚠️'}`);
+    console.log('==================================================');
 });
 
-process.on('SIGTERM', () => { console.log('🔄 Cerrando servidor...'); server.close(() => process.exit(0)); });
-process.on('SIGINT', () => { console.log('🔄 Cerrando servidor...'); server.close(() => process.exit(0)); });
+process.on('SIGTERM', () => { server.close(() => process.exit(0)); });
+process.on('SIGINT', () => { server.close(() => process.exit(0)); });
 
 module.exports = app;
