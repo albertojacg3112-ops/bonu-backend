@@ -328,7 +328,7 @@ app.post('/api/payments/stripe/create-intent', async (req, res) => {
         const paymentIntent = await stripe.paymentIntents.create({
             amount: Math.round(amount * 100),
             currency: currency.toLowerCase(),
-            meta { orderId, customerEmail, ...metadata },
+            metadata: { orderId, customerEmail, ...metadata },
             automatic_payment_methods: { enabled: true },
             description: `Pedido Bonü #${orderId}`
         });
