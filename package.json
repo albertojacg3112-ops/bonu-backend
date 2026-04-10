@@ -1,31 +1,33 @@
 {
   "name": "bonu-backend",
-  "version": "4.1.0",
-  "description": "Bonü Backend con Pagos Reales (Stripe, Mercado Pago, BonuPay, PayPal), envío automático de emails y soporte para CJ, SunSky y Firestore",
+  "version": "4.2.0",
+  "description": "Bonü Backend - Pagos Reales, Webhooks, Seguridad Producción",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "postinstall": "echo '✅ Bonü Backend instalado correctamente'"
+    "test": "echo \"Tests pendientes\" && exit 0",
+    "postinstall": "echo '✅ Bonü Backend v4.2 instalado'"
   },
   "dependencies": {
-    "axios": "^1.14.0",
-    "cors": "^2.8.6",
-    "dotenv": "^17.3.1",
     "express": "^4.18.3",
-    "express-rate-limit": "^7.1.5",
-    "firebase-admin": "^13.7.0",
-    "helmet": "^8.1.0",
-    "morgan": "^1.10.1",
-    "nodemailer": "^6.9.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "firebase-admin": "^12.0.0",
     "stripe": "^14.25.0",
     "mercadopago": "^2.0.15",
-    "@paypal/checkout-server-sdk": "^1.0.3"
+    "@paypal/checkout-server-sdk": "^1.0.3",
+    "nodemailer": "^6.9.13",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.2.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.1.0"
   },
   "engines": {
     "node": "20.x"
-  }
+  },
+  "keywords": ["bonu", "marketplace", "firebase", "stripe", "mercadopago"],
+  "author": "Bonü Team",
+  "license": "MIT"
 }
