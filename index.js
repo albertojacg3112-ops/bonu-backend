@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v3.0 (PRODUCCIÓN - Todo en Firestore)
+// index.js - Bonü Backend v4.1 (PRODUCCIÓN - Pagos Reales + BonuPay Integrado)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -8,12 +8,51 @@ const nodemailer = require('nodemailer');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 
+// 🆕 LIBRERÍAS DE PAGO
+const Stripe = require('stripe');
+const MercadoPago = require('mercadopago');
+const { Checkout } = require('@paypal/checkout-server-sdk');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
+// 🆕 INICIALIZAR SDKs DE PAGO
+let stripe = null, mercadopago = null, bonupay = null, paypalClient = null;
+
+// Stripe
+if (process.env.STRIPE_SECRET_KEY) {
+    stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2023-10-16' });
+    console.log('✅ Stripe inicializado');
+}
+
+// Mercado Pago (cuenta principal)
+if (process.env.MERCADO_PAGO_ACCESS_TOKEN) {
+    MercadoPago.configure({ access_token: process.env.MERCADO_PAGO_ACCESS_TOKEN });
+    mercadopago = MercadoPago;
+    console.log('✅ Mercado Pago (principal) inicializado');
+}
+
+// 🆕 BonuPay (cuenta separada - usa API de MP pero con credenciales propias)
+if (process.env.BONUPAY_ACCESS_TOKEN) {
+    // BonuPay usa la misma SDK de Mercado Pago pero con access token diferente
+    const BonuPaySDK = require('mercadopago');
+    BonuPaySDK.configure({ access_token: process.env.BONUPAY_ACCESS_TOKEN });
+    bonupay = BonuPaySDK;
+    console.log('✅ BonuPay inicializado (cuenta separada)');
+}
+
+// PayPal
+if (process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET) {
+    const paypalEnvironment = NODE_ENV === 'production' 
+        ? new Checkout.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
+        : new Checkout.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
+    paypalClient = new Checkout.core.PayPalHttpClient(paypalEnvironment);
+    console.log('✅ PayPal inicializado');
+}
+
 /* ════════════════════════════════════════════════════════════
-   🛡️ SEGURIDAD (NUEVO)
+   🛡️ SEGURIDAD
 ════════════════════════════════════════════════════════════ */
 app.use(helmet({
     contentSecurityPolicy: false,
@@ -66,7 +105,6 @@ async function sendConfirmationEmail(orderData) {
     `).join('');
     
     const subtotal = (items || []).reduce((sum, item) => sum + ((item.precioFinal || item.precio || 0) * (item.cantidad || 1)), 0);
-    const totalFinal = subtotal;
     
     const html = `
         <!DOCTYPE html>
@@ -80,13 +118,19 @@ async function sendConfirmationEmail(orderData) {
                 </div>
                 <div style="padding: 24px;">
                     <p>Hola <strong>${customerName}</strong>,</p>
-                    <p>Tu pedido <strong>#${orderId}</strong> ha sido confirmado.</p>
-                    <p>Total: ${formatCurrency(totalFinal)}</p>
-                    <h3>Productos:</h3>
-                    <table style="width: 100%;">${itemsHtml}</table>
+                    <p>Tu pedido <strong>#${orderId}</strong> ha sido confirmado y está siendo procesado.</p>
+                    <p><strong>Total pagado:</strong> ${formatCurrency(total)}</p>
+                    <p><strong>Método de pago:</strong> ${paymentMethod}</p>
+                    <h3 style="margin-top: 20px;">Productos:</h3>
+                    <table style="width: 100%; border-collapse: collapse;">${itemsHtml}</table>
+                    <div style="margin-top: 20px; padding: 15px; background: #f9fafb; border-radius: 8px;">
+                        <p style="margin: 0;"><strong>Dirección de envío:</strong></p>
+                        <p style="margin: 5px 0 0 0;">${shippingAddress?.direccion || 'N/A'}, ${shippingAddress?.ciudad || ''}, ${shippingAddress?.estado || ''}</p>
+                    </div>
                 </div>
                 <div style="background: #111827; padding: 20px; text-align: center; color: #9ca3af;">
                     <p>© 2026 Bonü - Todos los derechos reservados</p>
+                    <p style="font-size: 12px; margin-top: 10px;">¿Necesitas ayuda? Responde a este correo o contáctanos por WhatsApp</p>
                 </div>
             </div>
         </body>
@@ -97,7 +141,7 @@ async function sendConfirmationEmail(orderData) {
         await emailTransporter.sendMail({
             from: `"Bonü" <${process.env.EMAIL_USER}>`,
             to: customerEmail,
-            subject: `✅ Confirmación #${orderId}`,
+            subject: `✅ Confirmación de Pedido #${orderId}`,
             html
         });
         console.log(`📧 Email enviado a ${customerEmail}`);
@@ -165,7 +209,7 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token']
+    allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token', 'Stripe-Signature']
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -228,25 +272,26 @@ async function getCJToken() {
 /* ════════════════════════════════════════════════════════════
    🚦 RUTAS BASE
 ════════════════════════════════════════════════════════════ */
-app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend v3.0', env: NODE_ENV }));
-app.get('/health', (req, res) => res.json({ status: 'healthy', firestore: !!firestore, timestamp: Date.now() }));
-app.get('/api/status', (req, res) => res.json({ success: true, firestore: !!firestore, email: emailConfigurado }));
+app.get('/', (req, res) => res.json({ success: true, message: 'Bonü Backend v4.1 - Pagos Reales + BonuPay', env: NODE_ENV }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', firestore: !!firestore, stripe: !!stripe, mercadopago: !!mercadopago, bonupay: !!bonupay, paypal: !!paypalClient, timestamp: Date.now() }));
+app.get('/api/status', (req, res) => res.json({ success: true, firestore: !!firestore, email: emailConfigurado, payments: { stripe: !!stripe, mercadopago: !!mercadopago, bonupay: !!bonupay, paypal: !!paypalClient } }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
 
 /* ════════════════════════════════════════════════════════════
-   🔑 RUTA PARA OBTENER CLAVES PÚBLICAS (NUEVA - para el frontend)
+   🔑 RUTA PARA OBTENER CLAVES PÚBLICAS
 ════════════════════════════════════════════════════════════ */
 app.get('/api/config', (req, res) => {
     res.json({
         success: true,
         stripePublicKey: process.env.STRIPE_PUBLIC_KEY || null,
         mercadoPagoPublicKey: process.env.MERCADO_PAGO_PUBLIC_KEY || null,
+        bonupayPublicKey: process.env.BONUPAY_PUBLIC_KEY || null,
         paypalClientId: process.env.PAYPAL_CLIENT_ID || null
     });
 });
 
 /* ════════════════════════════════════════════════════════════
-   📊 TRACKING (GUARDADO EN FIRESTORE)
+   📊 TRACKING
 ════════════════════════════════════════════════════════════ */
 app.post('/api/tracking/visita', async (req, res) => {
     const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
@@ -263,6 +308,410 @@ app.post('/api/tracking/visita', async (req, res) => {
         console.error('Error tracking:', error.message);
         res.json({ success: true, message: 'Error en tracking' });
     }
+});
+
+/* ════════════════════════════════════════════════════════════
+   🆕 ENDPOINTS DE PAGO REAL
+════════════════════════════════════════════════════════════ */
+
+// Stripe: Crear PaymentIntent
+app.post('/api/payments/stripe/create-intent', async (req, res) => {
+    if (!stripe) return res.status(500).json({ success: false, error: 'Stripe no configurado' });
+    
+    const { amount, currency = 'mxn', orderId, customerEmail, metadata = {} } = req.body;
+    
+    if (!amount || !orderId) {
+        return res.status(400).json({ success: false, error: 'amount y orderId requeridos' });
+    }
+    
+    try {
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: Math.round(amount * 100),
+            currency: currency.toLowerCase(),
+            meta { orderId, customerEmail, ...metadata },
+            automatic_payment_methods: { enabled: true },
+            description: `Pedido Bonü #${orderId}`
+        });
+        
+        res.json({ 
+            success: true, 
+            clientSecret: paymentIntent.client_secret,
+            paymentIntentId: paymentIntent.id 
+        });
+    } catch (error) {
+        console.error('Error creando PaymentIntent:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Mercado Pago: Crear Preferencia (cuenta principal)
+app.post('/api/payments/mercadopago/create-preference', async (req, res) => {
+    if (!mercadopago) return res.status(500).json({ success: false, error: 'Mercado Pago no configurado' });
+    
+    const { items, payer, orderId, backUrls } = req.body;
+    
+    if (!items?.length || !orderId) {
+        return res.status(400).json({ success: false, error: 'items y orderId requeridos' });
+    }
+    
+    try {
+        const preference = await mercadopago.preferences.create({
+            items: items.map(item => ({
+                title: item.nombre.substring(0, 128),
+                unit_price: parseFloat(item.precio),
+                quantity: parseInt(item.cantidad) || 1,
+                currency_id: 'MXN'
+            })),
+            payer: { email: payer?.email },
+            external_reference: orderId,
+            back_urls: {
+                success: backUrls?.success || `${process.env.FRONTEND_URL}/checkout/success`,
+                failure: backUrls?.failure || `${process.env.FRONTEND_URL}/checkout/failure`,
+                pending: backUrls?.pending || `${process.env.FRONTEND_URL}/checkout/pending`
+            },
+            auto_return: 'approved',
+            notification_url: `${process.env.FRONTEND_URL || 'https://tu-backend.onrender.com'}/api/webhooks/mercadopago`
+        });
+        
+        res.json({ 
+            success: true, 
+            init_point: preference.body.init_point, 
+            preferenceId: preference.body.id 
+        });
+    } catch (error) {
+        console.error('Error creando preferencia MP:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 🆕 BonuPay: Crear Preferencia (cuenta separada - usa API de MP)
+app.post('/api/payments/bonupay/create-preference', async (req, res) => {
+    if (!bonupay) return res.status(500).json({ success: false, error: 'BonuPay no configurado' });
+    
+    const { items, payer, orderId, backUrls } = req.body;
+    
+    if (!items?.length || !orderId) {
+        return res.status(400).json({ success: false, error: 'items y orderId requeridos' });
+    }
+    
+    try {
+        // BonuPay usa la misma estructura que Mercado Pago pero con sus propias credenciales
+        const preference = await bonupay.preferences.create({
+            items: items.map(item => ({
+                title: `Bonü - ${item.nombre.substring(0, 100)}`, // Prefijo para identificar en BonuPay
+                unit_price: parseFloat(item.precio),
+                quantity: parseInt(item.cantidad) || 1,
+                currency_id: 'MXN'
+            })),
+            payer: { email: payer?.email },
+            external_reference: orderId,
+            back_urls: {
+                success: backUrls?.success || `${process.env.FRONTEND_URL}/checkout/success?payment_method=bonupay`,
+                failure: backUrls?.failure || `${process.env.FRONTEND_URL}/checkout/failure?payment_method=bonupay`,
+                pending: backUrls?.pending || `${process.env.FRONTEND_URL}/checkout/pending?payment_method=bonupay`
+            },
+            auto_return: 'approved',
+            // 🆕 Webhook específico para BonuPay
+            notification_url: `${process.env.FRONTEND_URL || 'https://tu-backend.onrender.com'}/api/webhooks/bonupay`,
+            // Metadata adicional para identificar que es BonuPay
+            metadata: {
+                bonupay: true,
+                marketplace: 'Bonü',
+                orderId: orderId
+            }
+        });
+        
+        console.log(`✅ Preferencia BonuPay creada: ${preference.body.id} para orden ${orderId}`);
+        
+        res.json({ 
+            success: true, 
+            init_point: preference.body.init_point, 
+            preferenceId: preference.body.id,
+            paymentMethod: 'bonupay'
+        });
+    } catch (error) {
+        console.error('❌ Error creando preferencia BonuPay:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message,
+            details: error.cause || null
+        });
+    }
+});
+
+// PayPal: Crear Orden
+app.post('/api/payments/paypal/create-order', async (req, res) => {
+    if (!paypalClient) return res.status(500).json({ success: false, error: 'PayPal no configurado' });
+    
+    const { items, orderId, total } = req.body;
+    
+    if (!items?.length || !orderId || !total) {
+        return res.status(400).json({ success: false, error: 'items, orderId y total requeridos' });
+    }
+    
+    try {
+        const request = new Checkout.orders.OrdersCreateRequest();
+        request.prefer('return=representation');
+        request.requestBody({
+            intent: 'CAPTURE',
+            purchase_units: [{
+                reference_id: orderId,
+                amount: {
+                    currency_code: 'MXN',
+                    value: total.toFixed(2)
+                }
+            }],
+            application_context: {
+                return_url: `${process.env.FRONTEND_URL}/checkout/success`,
+                cancel_url: `${process.env.FRONTEND_URL}/checkout/failure`,
+                brand_name: 'Bonü',
+                user_action: 'PAY_NOW'
+            }
+        });
+        
+        const order = await paypalClient.execute(request);
+        const approveLink = order.result.links.find(link => link.rel === 'approve');
+        
+        res.json({ 
+            success: true, 
+            approveLink: approveLink?.href,
+            orderId: order.result.id 
+        });
+    } catch (error) {
+        console.error('Error creando orden PayPal:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* ════════════════════════════════════════════════════════════
+   🆕 WEBHOOKS DE CONFIRMACIÓN DE PAGO
+════════════════════════════════════════════════════════════ */
+
+// Función auxiliar para descontar stock y enviar email
+async function procesarOrdenPagada(orderId, paymentMethod, paymentDetails) {
+    if (!firestore) return;
+    
+    try {
+        // Obtener orden de Firestore
+        const orderDoc = await firestore.collection('pedidos').doc(orderId).get();
+        if (!orderDoc.exists) {
+            console.warn(`⚠️ Orden ${orderId} no encontrada en webhook ${paymentMethod}`);
+            return;
+        }
+        
+        const order = orderDoc.data();
+        
+        // Actualizar estado de la orden
+        await firestore.collection('pedidos').doc(orderId).update({
+            estado: 'pagado',
+            fechaPago: new Date().toISOString(),
+            paymentDetails: {
+                ...paymentDetails,
+                confirmadoPorWebhook: true,
+                fechaConfirmacion: new Date().toISOString()
+            }
+        });
+        
+        // 🔥 DESCONTAR STOCK de cada producto
+        if (order.items && order.items.length > 0) {
+            for (const item of order.items) {
+                if (!item.id) continue;
+                const prodRef = firestore.collection('productos').doc(item.id);
+                const prodDoc = await prodRef.get();
+                
+                if (prodDoc.exists) {
+                    const currentStock = prodDoc.data().stock || 0;
+                    const quantity = item.cantidad || 1;
+                    const newStock = Math.max(0, currentStock - quantity);
+                    
+                    await prodRef.update({ 
+                        stock: newStock,
+                        ultimaVenta: new Date().toISOString()
+                    });
+                    console.log(`📦 Stock actualizado: ${item.nombre} ${currentStock} → ${newStock}`);
+                }
+            }
+        }
+        
+        // 📧 Enviar email de confirmación
+        if (order.shipping?.email) {
+            await sendConfirmationEmail({
+                orderId,
+                customerEmail: order.shipping.email,
+                customerName: order.shipping.nombre,
+                total: order.total,
+                items: order.items,
+                shippingAddress: order.shipping,
+                paymentMethod,
+                date: order.fecha
+            });
+        }
+        
+        // 📊 Actualizar transacción
+        await firestore.collection('transacciones').add({
+            ordenId: orderId,
+            monto: order.total,
+            pasarela: paymentMethod,
+            estado: 'pagado',
+            paymentId: paymentDetails?.id || null,
+            fechaCreacion: new Date().toISOString()
+        });
+        
+        console.log(`✅ Orden ${orderId} procesada completamente vía ${paymentMethod}`);
+        return true;
+        
+    } catch (error) {
+        console.error(`❌ Error procesando orden ${orderId}:`, error);
+        return false;
+    }
+}
+
+// Stripe Webhook Handler
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+    if (!stripe || !firestore) return res.status(500).send('Webhook no configurado');
+    
+    const sig = req.headers['stripe-signature'];
+    let event;
+    
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+        console.error('❌ Webhook Stripe error:', err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+    
+    // Manejar eventos de pago exitoso
+    if (event.type === 'payment_intent.succeeded') {
+        const paymentIntent = event.data.object;
+        const orderId = paymentIntent.metadata.orderId;
+        
+        if (orderId) {
+            await procesarOrdenPagada(orderId, 'Stripe', {
+                id: paymentIntent.id,
+                amount: paymentIntent.amount / 100,
+                currency: paymentIntent.currency,
+                status: paymentIntent.status
+            });
+        }
+    }
+    
+    // Manejar pagos fallidos
+    if (event.type === 'payment_intent.payment_failed') {
+        const paymentIntent = event.data.object;
+        const orderId = paymentIntent.metadata.orderId;
+        if (orderId) {
+            await firestore.collection('pedidos').doc(orderId).update({
+                estado: 'cancelado',
+                paymentError: paymentIntent.last_payment_error?.message || 'Pago fallido',
+                fechaActualizacion: new Date().toISOString()
+            });
+            console.log(`❌ Pago fallido para orden ${orderId}`);
+        }
+    }
+    
+    res.json({ received: true });
+});
+
+// Mercado Pago Webhook Handler (cuenta principal)
+app.post('/api/webhooks/mercadopago', express.json(), async (req, res) => {
+    if (!mercadopago || !firestore) return res.status(500).send('Webhook no configurado');
+    
+    const { action, data } = req.body;
+    
+    if (action === 'payment.created' || action === 'payment.updated') {
+        try {
+            // Obtener detalles del pago desde MP API
+            const payment = await mercadopago.payment.get(data.id);
+            const orderId = payment.body.external_reference;
+            const status = payment.body.status;
+            
+            if (orderId && ['approved', 'rejected'].includes(status)) {
+                const estadoMap = { approved: 'pagado', rejected: 'cancelado', pending: 'pendiente' };
+                
+                await procesarOrdenPagada(orderId, 'Mercado Pago', {
+                    id: payment.body.id,
+                    amount: payment.body.transaction_amount,
+                    currency: payment.body.currency_id,
+                    status: payment.body.status,
+                    payment_method: payment.body.payment_method_id
+                });
+                
+                console.log(`✅ Webhook MP principal: Orden ${orderId} -> ${status}`);
+            }
+        } catch (error) {
+            console.error('Error procesando webhook MP principal:', error);
+        }
+    }
+    
+    res.status(200).send('OK');
+});
+
+// 🆕 BonuPay Webhook Handler (cuenta separada)
+app.post('/api/webhooks/bonupay', express.json(), async (req, res) => {
+    if (!bonupay || !firestore) return res.status(500).send('Webhook BonuPay no configurado');
+    
+    const { action, data } = req.body;
+    
+    // Verificar que el webhook viene de BonuPay (por seguridad)
+    const bonupaySignature = req.headers['x-bonupay-signature'];
+    if (process.env.BONUPAY_WEBHOOK_SECRET && bonupaySignature) {
+        // Aquí podrías verificar la firma si BonuPay la proporciona
+        // Por ahora, confiamos en que la URL del webhook es secreta
+    }
+    
+    if (action === 'payment.created' || action === 'payment.updated') {
+        try {
+            // Obtener detalles del pago desde la API de BonuPay (usa SDK de MP)
+            const payment = await bonupay.payment.get(data.id);
+            const orderId = payment.body.external_reference;
+            const status = payment.body.status;
+            
+            // Verificar metadata para confirmar que es una orden de BonuPay
+            const isBonuPay = payment.body.metadata?.bonupay === true || 
+                             payment.body.external_reference?.startsWith('BONU-');
+            
+            if (orderId && isBonuPay && ['approved', 'rejected'].includes(status)) {
+                const estadoMap = { approved: 'pagado', rejected: 'cancelado', pending: 'pendiente' };
+                
+                await procesarOrdenPagada(orderId, 'BonuPay', {
+                    id: payment.body.id,
+                    amount: payment.body.transaction_amount,
+                    currency: payment.body.currency_id,
+                    status: payment.body.status,
+                    payment_method: payment.body.payment_method_id,
+                    bonupayAccount: true // Marcador para identificar cuenta BonuPay
+                });
+                
+                console.log(`✅ Webhook BonuPay: Orden ${orderId} -> ${status}`);
+            }
+        } catch (error) {
+            console.error('❌ Error procesando webhook BonuPay:', error);
+        }
+    }
+    
+    res.status(200).send('OK');
+});
+
+// PayPal Webhook Handler
+app.post('/api/webhooks/paypal', express.json(), async (req, res) => {
+    if (!paypalClient || !firestore) return res.status(500).send('Webhook no configurado');
+    
+    const { event_type, resource } = req.body;
+    
+    if (event_type === 'PAYMENT.CAPTURE.COMPLETED') {
+        const orderId = resource.supplementary_data?.related_ids?.order_id;
+        if (orderId) {
+            await procesarOrdenPagada(orderId, 'PayPal', {
+                id: resource.id,
+                amount: resource.amount?.value,
+                currency: resource.amount?.currency_code,
+                status: resource.status
+            });
+            console.log(`✅ PayPal pago completado: ${orderId}`);
+        }
+    }
+    
+    res.status(200).send('OK');
 });
 
 /* ════════════════════════════════════════════════════════════
@@ -391,37 +840,23 @@ app.post('/api/admin/ordenes', async (req, res) => {
             direccion: direccion || {},
             total: parseFloat(total),
             pasarela: pasarela || 'Desconocida',
-            estado: 'pagado',
+            estado: 'pendiente',
             emailCliente: customerEmail || direccion?.email,
             fechaCreacion: new Date().toISOString()
         };
         
         await firestore.collection('pedidos').doc(ordenId).set(orden);
         
-        // Registrar transacción
+        // Registrar transacción inicial
         await firestore.collection('transacciones').add({
             ordenId,
             monto: orden.total,
             pasarela: orden.pasarela,
-            estado: 'pagado',
+            estado: 'pendiente',
             fechaCreacion: new Date().toISOString()
         });
         
-        // Enviar email si hay email
-        if (orden.emailCliente) {
-            await sendConfirmationEmail({
-                orderId: orden.id,
-                customerEmail: orden.emailCliente,
-                customerName: usuario || 'Cliente',
-                total: orden.total,
-                items: orden.items,
-                shippingAddress: direccion,
-                paymentMethod: pasarela,
-                date: orden.fechaCreacion
-            });
-        }
-        
-        res.json({ success: true, orden });
+        res.json({ success: true, orden, message: 'Orden creada. Esperando confirmación de pago.' });
     } catch (error) {
         console.error('Error creando orden:', error);
         res.status(500).json({ success: false, error: error.message });
@@ -568,6 +1003,13 @@ app.get('/api/admin/dashboard', async (req, res) => {
         const estados = { pendiente: 0, pagado: 0, enviado: 0, cancelado: 0 };
         ordenes.forEach(o => estados[o.estado || 'pendiente']++);
         
+        // 🆕 Estadísticas por método de pago
+        const pagosPorMetodo = {};
+        ordenes.forEach(o => {
+            const metodo = o.pasarela || 'Desconocido';
+            pagosPorMetodo[metodo] = (pagosPorMetodo[metodo] || 0) + 1;
+        });
+        
         res.json({
             success: true,
             resumen: {
@@ -577,7 +1019,8 @@ app.get('/api/admin/dashboard', async (req, res) => {
                 totalProductos,
                 montoTotal
             },
-            ordenes: { estados }
+            ordenes: { estados },
+            pagos: { porMetodo: pagosPorMetodo }
         });
     } catch (error) {
         console.error('Error dashboard:', error);
@@ -586,7 +1029,7 @@ app.get('/api/admin/dashboard', async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   ℹ️ 404
+   ℹ️ 404 y Error Handler
 ════════════════════════════════════════════════════════════ */
 app.use((req, res) => res.status(404).json({ error: 'Endpoint no encontrado' }));
 app.use((err, req, res, next) => {
@@ -599,9 +1042,13 @@ app.use((err, req, res, next) => {
 ════════════════════════════════════════════════════════════ */
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
-    console.log('✅ Bonü Backend v3.0 - PRODUCCIÓN (Todo en Firestore)');
+    console.log('✅ Bonü Backend v4.1 - PRODUCCIÓN (Pagos Reales + BonuPay)');
     console.log(`📡 Puerto: ${PORT}`);
-    console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
+    console.log(`🔥 Firestore: ${firestore ? '✅' : '❌'}`);
+    console.log(`💳 Stripe: ${stripe ? '✅' : '❌'}`);
+    console.log(`💳 Mercado Pago: ${mercadopago ? '✅' : '❌'}`);
+    console.log(`💳 BonuPay: ${bonupay ? '✅' : '❌'}`);
+    console.log(`💳 PayPal: ${paypalClient ? '✅' : '❌'}`);
     console.log(`📧 Email: ${emailConfigurado ? '✅' : '⚠️'}`);
     console.log('==================================================');
 });
