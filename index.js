@@ -20,6 +20,8 @@ app.use(helmet({
     crossOriginEmbedderPolicy: false
 }));
 
+// Configurar trust proxy para Render (evita error de rate-limit)
+app.set('trust proxy', 1);
 // Rate limiter general
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
