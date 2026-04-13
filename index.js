@@ -153,8 +153,6 @@ if (!firestore) {
 
 /* ════════════════════════════════════════════════════════════
    🔐 MIDDLEWARE DE AUTENTICACIÓN FIREBASE
-   Verifica el ID Token que el frontend manda en Authorization: Bearer <token>
-   Si el usuario tiene claim admin:true en Firebase → pasa
 ════════════════════════════════════════════════════════════ */
 async function verificarAdmin(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -167,8 +165,6 @@ async function verificarAdmin(req, res, next) {
     try {
         const decoded = await admin.auth().verifyIdToken(idToken);
 
-        // Verifica claim personalizado admin:true
-        // Para asignarlo desde Firebase Console o con admin.auth().setCustomUserClaims(uid, { admin: true })
         if (!decoded.admin) {
             return res.status(403).json({ success: false, error: 'Acceso denegado: se requiere rol admin' });
         }
@@ -185,16 +181,15 @@ async function verificarAdmin(req, res, next) {
    🔐 VARIABLES DE ENTORNO
 ════════════════════════════════════════════════════════════ */
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET; // desde Stripe Dashboard → Webhooks
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const MERCADO_PAGO_ACCESS_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
-const MERCADO_PAGO_WEBHOOK_SECRET = process.env.MERCADO_PAGO_WEBHOOK_SECRET; // clave configurada en MP
+const MERCADO_PAGO_WEBHOOK_SECRET = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
 const BONUPAY_ACCESS_TOKEN = process.env.BONUPAY_ACCESS_TOKEN;
 const BONUPAY_WEBHOOK_SECRET = process.env.BONUPAY_WEBHOOK_SECRET;
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
 const PAYPAL_MODE = process.env.PAYPAL_MODE || 'live';
-const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID; // desde PayPal Dashboard → Webhooks
-
+const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID;
 const CJ_API_KEY = process.env.CJ_API_KEY;
 const CJ_API_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
 
@@ -222,8 +217,6 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token']
 }));
 
-// IMPORTANTE: Los webhooks necesitan el body RAW (sin parsear) para verificar firma
-// Se registran ANTES del express.json() global
 app.use('/api/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use('/api/webhook/mercadopago', express.raw({ type: 'application/json' }));
 app.use('/api/webhook/bonupay', express.raw({ type: 'application/json' }));
@@ -530,16 +523,69 @@ app.post('/api/payments/paypal/capture-order', paymentLimiter, async (req, res) 
 });
 
 /* ════════════════════════════════════════════════════════════
-   📡 WEBHOOKS CON VERIFICACIÓN DE FIRMA
-
-   ⚙️ Variables de entorno necesarias:
-     STRIPE_WEBHOOK_SECRET      → Stripe Dashboard → Webhooks → Signing secret
-     MERCADO_PAGO_WEBHOOK_SECRET → MP Panel → Notificaciones → Secret key
-     BONUPAY_WEBHOOK_SECRET      → Igual que MP (misma infraestructura)
-     PAYPAL_WEBHOOK_ID           → PayPal Dashboard → Webhooks → Webhook ID
+   📡 WEBHOOKS
 ════════════════════════════════════════════════════════════ */
 
-/* ── STRIPE ─────────────────────────────────────────────── */
+function verificarFirmaMP(req, secret) {
+    try {
+        const xSignature = req.headers['x-signature'];
+        const xRequestId = req.headers['x-request-id'];
+
+        if (!xSignature || !xRequestId || !secret) return false;
+
+        const parts = xSignature.split(',');
+        const ts = parts.find(p => p.startsWith('ts='))?.split('=')[1];
+        const v1 = parts.find(p => p.startsWith('v1='))?.split('=')[1];
+
+        if (!ts || !v1) return false;
+
+        const body = JSON.parse(req.body.toString());
+        const dataId = body?.data?.id;
+
+        if (!dataId) return false;
+
+        const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
+        const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
+
+        return crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected));
+    } catch {
+        return false;
+    }
+}
+
+async function verificarFirmaPayPal(req) {
+    if (!PAYPAL_WEBHOOK_ID || !PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return false;
+
+    try {
+        const accessToken = await getPayPalAccessToken();
+
+        const verificationBody = {
+            auth_algo: req.headers['paypal-auth-algo'],
+            cert_url: req.headers['paypal-cert-url'],
+            transmission_id: req.headers['paypal-transmission-id'],
+            transmission_sig: req.headers['paypal-transmission-sig'],
+            transmission_time: req.headers['paypal-transmission-time'],
+            webhook_id: PAYPAL_WEBHOOK_ID,
+            webhook_event: JSON.parse(req.body.toString())
+        };
+
+        const response = await fetch(`${PAYPAL_API_URL}/v1/notifications/verify-webhook-signature`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(verificationBody)
+        });
+
+        const result = await response.json();
+        return result.verification_status === 'SUCCESS';
+    } catch (error) {
+        console.error('❌ Error verificando firma PayPal:', error.message);
+        return false;
+    }
+}
+
 app.post('/api/webhook/stripe', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) {
         console.warn('⚠️ Webhook Stripe recibido pero Stripe no está configurado');
@@ -550,7 +596,6 @@ app.post('/api/webhook/stripe', async (req, res) => {
     let event;
 
     try {
-        // req.body aquí es Buffer (raw) gracias al middleware registrado arriba
         event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
     } catch (err) {
         console.error('❌ Firma Stripe inválida:', err.message);
@@ -587,42 +632,7 @@ app.post('/api/webhook/stripe', async (req, res) => {
     res.sendStatus(200);
 });
 
-/* ── MERCADO PAGO ────────────────────────────────────────── */
-/*
-   MP envía en el header: x-signature → ts=<timestamp>,v1=<hmac>
-   y en el body: { type, data: { id } }
-   La firma se construye así: "id:<dataId>;request-id:<xRequestId>;ts:<ts>;"
-   y se verifica con HMAC-SHA256 usando MERCADO_PAGO_WEBHOOK_SECRET
-*/
-function verificarFirmaMP(req, secret) {
-    try {
-        const xSignature = req.headers['x-signature'];
-        const xRequestId = req.headers['x-request-id'];
-
-        if (!xSignature || !xRequestId || !secret) return false;
-
-        const parts = xSignature.split(',');
-        const ts = parts.find(p => p.startsWith('ts='))?.split('=')[1];
-        const v1 = parts.find(p => p.startsWith('v1='))?.split('=')[1];
-
-        if (!ts || !v1) return false;
-
-        const body = JSON.parse(req.body.toString());
-        const dataId = body?.data?.id;
-
-        if (!dataId) return false;
-
-        const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
-        const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
-
-        return crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected));
-    } catch {
-        return false;
-    }
-}
-
 app.post('/api/webhook/mercadopago', async (req, res) => {
-    // Siempre responder 200 rápido a MP para evitar reintentos
     res.sendStatus(200);
 
     if (MERCADO_PAGO_WEBHOOK_SECRET) {
@@ -663,7 +673,6 @@ app.post('/api/webhook/mercadopago', async (req, res) => {
     }
 });
 
-/* ── BONUPAY ─────────────────────────────────────────────── */
 app.post('/api/webhook/bonupay', async (req, res) => {
     res.sendStatus(200);
 
@@ -704,45 +713,6 @@ app.post('/api/webhook/bonupay', async (req, res) => {
         console.error('❌ Error procesando webhook BonuPay:', error.message);
     }
 });
-
-/* ── PAYPAL ──────────────────────────────────────────────── */
-/*
-   PayPal firma su webhook con HMAC-SHA256.
-   Se verifica usando la API de PayPal (verify-webhook-signature)
-   pasando el webhook_id, headers y body originales.
-*/
-async function verificarFirmaPayPal(req) {
-    if (!PAYPAL_WEBHOOK_ID || !PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return false;
-
-    try {
-        const accessToken = await getPayPalAccessToken();
-
-        const verificationBody = {
-            auth_algo: req.headers['paypal-auth-algo'],
-            cert_url: req.headers['paypal-cert-url'],
-            transmission_id: req.headers['paypal-transmission-id'],
-            transmission_sig: req.headers['paypal-transmission-sig'],
-            transmission_time: req.headers['paypal-transmission-time'],
-            webhook_id: PAYPAL_WEBHOOK_ID,
-            webhook_event: JSON.parse(req.body.toString())
-        };
-
-        const response = await fetch(`${PAYPAL_API_URL}/v1/notifications/verify-webhook-signature`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(verificationBody)
-        });
-
-        const result = await response.json();
-        return result.verification_status === 'SUCCESS';
-    } catch (error) {
-        console.error('❌ Error verificando firma PayPal:', error.message);
-        return false;
-    }
-}
 
 app.post('/api/webhook/paypal', async (req, res) => {
     res.sendStatus(200);
@@ -797,7 +767,6 @@ app.get('/api/status', (req, res) => res.json({
 }));
 app.get('/api/categorias', (req, res) => res.json({ success: true, categorias: CATEGORIAS }));
 
-// Solo expone claves públicas, nunca las secretas
 app.get('/api/config', (req, res) => {
     res.json({
         success: true,
@@ -855,7 +824,6 @@ async function getCJToken() {
             }
             throw new Error(`Error CJ: ${data.message}`);
         } finally {
-            // Limpiar siempre para no quedar con promesa rechazada cacheada
             cjTokenPromise = null;
         }
     })();
@@ -913,7 +881,7 @@ app.post('/api/cj/import', verificarAdmin, async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   📦 ÓRDENES — todas protegidas con verificarAdmin
+   📦 ÓRDENES
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/trafico', verificarAdmin, async (req, res) => {
     if (!firestore) return res.json({ total: 0, hoy: 0, mes: 0 });
@@ -979,7 +947,6 @@ app.patch('/api/admin/ordenes/:id/estado', verificarAdmin, async (req, res) => {
 });
 
 app.post('/api/admin/ordenes', async (req, res) => {
-    // Esta ruta es llamada por el frontend al confirmar un pago → pública pero validada
     if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
 
     const { usuario, items, direccion, total, pasarela, customerEmail } = req.body;
@@ -1181,6 +1148,41 @@ app.get('/api/admin/dashboard', verificarAdmin, async (req, res) => {
     } catch (error) {
         console.error('Error dashboard:', error);
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* ════════════════════════════════════════════════════════════
+   👑 ENDPOINT TEMPORAL PARA ASIGNAR ADMIN
+   ⚠️ ELIMINAR DESPUÉS DE USAR
+════════════════════════════════════════════════════════════ */
+app.post('/api/admin/set-role', async (req, res) => {
+    const { uid, email } = req.body;
+    
+    if (!uid && !email) {
+        return res.status(400).json({ error: 'Se requiere uid o email' });
+    }
+    
+    try {
+        let user;
+        if (uid) {
+            user = await admin.auth().getUser(uid);
+        } else {
+            user = await admin.auth().getUserByEmail(email);
+        }
+        
+        await admin.auth().setCustomUserClaims(user.uid, { admin: true });
+        
+        console.log(`✅ Usuario ${user.email} (UID: ${user.uid}) ahora es ADMINISTRADOR`);
+        
+        res.json({ 
+            success: true, 
+            message: `✅ Usuario ${user.email} ahora es administrador`,
+            uid: user.uid,
+            email: user.email
+        });
+    } catch (error) {
+        console.error('Error asignando admin:', error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
