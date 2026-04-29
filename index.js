@@ -883,6 +883,84 @@ app.post('/api/cj/import', verificarAdmin, async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
+   ☀️ SUNSKY
+════════════════════════════════════════════════════════════ */
+app.post('/api/sunsky/import', verificarAdmin, async (req, res) => {
+    const { sku, precioVenta, tipo, categoria } = req.body;
+    
+    if (!sku || !precioVenta) {
+        return res.status(400).json({ success: false, error: 'SKU y precioVenta requeridos' });
+    }
+    
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+
+    try {
+        const sunskyBaseUrl = process.env.SUNSKY_BASE_URL || 'https://api.sunsky-online.com';
+        const apiKey = process.env.SUNSKY_API_KEY;
+        const apiSecret = process.env.SUNSKY_API_SECRET;
+        
+        if (!apiKey || !apiSecret) {
+            throw new Error('SUNSKY_API_KEY o SUNSKY_API_SECRET no configuradas');
+        }
+        
+        const response = await fetch(`${sunskyBaseUrl}/v1/product/details`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': apiKey,
+                'X-API-Secret': apiSecret
+            },
+            body: JSON.stringify({ sku: sku })
+        });
+        
+        const data = await response.json();
+        
+        if (!data || !data.success) {
+            throw new Error(`Producto ${sku} no encontrado en SunSky`);
+        }
+        
+        const producto = data.product || data.data || {};
+        const nombre = producto.name || producto.productName || `Producto SunSky ${sku}`;
+        const imagenes = producto.images || (producto.image ? [producto.image] : [`https://picsum.photos/seed/${sku}/500/500`]);
+        const descripcion = producto.description || producto.desc || '';
+        const stockDisponible = producto.stock || producto.inventory || 100;
+        
+        const productoFinal = {
+            sku: sku,
+            nombre: nombre,
+            descripcion: descripcion,
+            categoria: categoria || detectarCategoria(nombre, descripcion),
+            precioFinal: parseFloat(precioVenta),
+            precioOriginal: parseFloat(precioVenta) * 1.15,
+            descuento: 13,
+            stock: stockDisponible,
+            tipo: tipo || 'Ofertas',
+            rating: 4.5,
+            imagenes: imagenes,
+            proveedor: 'SunSky',
+            skuOriginal: sku,
+            fechaCreacion: new Date().toISOString(),
+            fechaAgregado: new Date().toISOString()
+        };
+
+        const docRef = await firestore.collection('productos').add(productoFinal);
+        console.log(`✅ Producto SunSky guardado: ${docRef.id} - SKU: ${sku}`);
+        
+        res.json({ 
+            success: true, 
+            message: 'Producto importado desde SunSky exitosamente',
+            id: docRef.id, 
+            product: productoFinal 
+        });
+    } catch (error) {
+        console.error('❌ Error SunSky:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* ════════════════════════════════════════════════════════════
    📦 ÓRDENES
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/trafico', verificarAdmin, async (req, res) => {
