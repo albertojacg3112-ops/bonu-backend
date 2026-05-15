@@ -98,7 +98,7 @@ async function sendConfirmationEmail(orderData) {
                     <p>Tu pedido <strong>#${orderId}</strong> ha sido confirmado.</p>
                     <p>Total: ${formatCurrency(subtotal)}</p>
                     <h3>Productos:</h3>
-                    <table style="width: 100%;">${itemsHtml}</table>
+                    <table style="width: 100%;">${itemsHtml}<table>
                 </div>
                 <div style="background: #111827; padding: 20px; text-align: center; color: #9ca3af;">
                     <p>© 2026 Bonü - Todos los derechos reservados</p>
@@ -780,6 +780,72 @@ app.get('/api/config', (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
+   🛍️ ENDPOINTS PÚBLICOS PARA EL FRONTEND (PRODUCTOS)
+   🆕 AGREGADOS - NO MODIFICAN NADA EXISTENTE
+════════════════════════════════════════════════════════════ */
+
+// Listar todos los productos (público)
+app.get('/api/products', async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+
+    try {
+        const { limit = 50, categoria, tipo, search } = req.query;
+        let query = firestore.collection('productos');
+        
+        if (categoria) query = query.where('categoria', '==', categoria);
+        if (tipo) query = query.where('tipo', '==', tipo);
+        
+        const snapshot = await query.orderBy('fechaAgregado', 'desc').limit(parseInt(limit)).get();
+        const productos = [];
+        snapshot.forEach(doc => {
+            productos.push({ id: doc.id, ...doc.data() });
+        });
+        
+        // Filtrar por búsqueda si viene el parámetro
+        let resultados = productos;
+        if (search && search.trim()) {
+            const searchLower = search.toLowerCase();
+            resultados = productos.filter(p => 
+                p.nombre?.toLowerCase().includes(searchLower) ||
+                p.categoria?.toLowerCase().includes(searchLower) ||
+                p.descripcion?.toLowerCase().includes(searchLower)
+            );
+        }
+        
+        res.json({ success: true, productos: resultados });
+    } catch (error) {
+        console.error('Error en /api/products:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Obtener un producto por ID (público)
+app.get('/api/products/:id', async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+
+    try {
+        const productRef = firestore.collection('productos').doc(req.params.id);
+        const productDoc = await productRef.get();
+        
+        if (!productDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Producto no encontrado' });
+        }
+        
+        res.json({ 
+            success: true, 
+            producto: { id: productDoc.id, ...productDoc.data() } 
+        });
+    } catch (error) {
+        console.error('Error en /api/products/:id:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* ════════════════════════════════════════════════════════════
    📊 TRACKING
 ════════════════════════════════════════════════════════════ */
 app.post('/api/tracking/visita', async (req, res) => {
@@ -1152,7 +1218,7 @@ app.get('/api/admin/transacciones', verificarAdmin, async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
-   🛍️ PRODUCTOS
+   🛍️ PRODUCTOS (ADMIN)
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/productos', verificarAdmin, async (req, res) => {
     if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -1292,6 +1358,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🔐 BonuPay Webhook Secret: ${BONUPAY_WEBHOOK_SECRET ? '✅' : '⚠️ sin verificación'}`);
     console.log(`💳 PayPal: ${PAYPAL_CLIENT_ID ? '✅' : '❌'}`);
     console.log(`🔐 PayPal Webhook ID: ${PAYPAL_WEBHOOK_ID ? '✅' : '⚠️ sin verificación'}`);
+    console.log('==================================================');
+    console.log('🆕 ENDPOINTS PÚBLICOS AGREGADOS:');
+    console.log('   GET /api/products - Listar productos');
+    console.log('   GET /api/products/:id - Detalle de producto');
     console.log('==================================================');
 });
 
