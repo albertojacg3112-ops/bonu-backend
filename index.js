@@ -1333,6 +1333,52 @@ app.post('/api/admin/set-role', async (req, res) => {
 });
 
 /* ════════════════════════════════════════════════════════════
+   🔗 OPEN GRAPH DINÁMICO PARA COMPARTIR PRODUCTOS
+════════════════════════════════════════════════════════════ */
+app.get('/og/producto/:id', async (req, res) => {
+    if (!firestore) return res.redirect('https://xn--bon-joa.com');
+
+    try {
+        const productDoc = await firestore.collection('productos').doc(req.params.id).get();
+
+        if (!productDoc.exists) return res.redirect('https://xn--bon-joa.com');
+
+        const p = productDoc.data();
+        const imagen = p.imagenes?.[0] || 'https://xn--bon-joa.com/og-image.jpg';
+        const titulo = p.nombre || 'Bonü Marketplace';
+        const descripcion = p.descripcion?.substring(0, 160) || 'Compra en Bonü con cashback y envío gratis';
+        const precio = p.precioFinal ? `$${p.precioFinal} MXN` : '';
+        const url = `https://xn--bon-joa.com/producto/${req.params.id}`;
+
+        res.send(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>${titulo} | Bonü</title>
+    <meta property="og:type" content="product">
+    <meta property="og:title" content="${titulo}">
+    <meta property="og:description" content="${precio ? precio + ' - ' : ''}${descripcion}">
+    <meta property="og:image" content="${imagen}">
+    <meta property="og:image:width" content="800">
+    <meta property="og:image:height" content="800">
+    <meta property="og:url" content="${url}">
+    <meta property="og:site_name" content="Bonü Marketplace">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="${titulo}">
+    <meta name="twitter:description" content="${descripcion}">
+    <meta name="twitter:image" content="${imagen}">
+    <meta http-equiv="refresh" content="0;url=${url}">
+</head>
+<body>
+    <script>window.location.href = "${url}";</script>
+</body>
+</html>`);
+    } catch (error) {
+        console.error('Error OG:', error);
+        res.redirect('https://xn--bon-joa.com');
+    }
+});
+/* ════════════════════════════════════════════════════════════
    ℹ️ ERRORES
 ════════════════════════════════════════════════════════════ */
 app.use((req, res) => res.status(404).json({ error: 'Endpoint no encontrado' }));

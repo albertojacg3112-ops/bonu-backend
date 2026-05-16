@@ -10,16 +10,16 @@
     "postinstall": "echo '✅ Bonü Backend v4.2 instalado'"
   },
   "dependencies": {
-    "express": "^4.18.3",
+    "@paypal/checkout-server-sdk": "^1.0.3",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
-    "firebase-admin": "^12.0.0",
-    "stripe": "^14.25.0",
-    "mercadopago": "^2.0.15",
-    "@paypal/checkout-server-sdk": "^1.0.3",
-    "nodemailer": "^6.9.13",
+    "express": "^4.18.3",
+    "express-rate-limit": "^7.2.0",
+    "firebase-admin": "^10.3.0",
     "helmet": "^7.1.0",
-    "express-rate-limit": "^7.2.0"
+    "mercadopago": "^2.0.15",
+    "nodemailer": "^8.0.7",
+    "stripe": "^14.25.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
@@ -27,7 +27,13 @@
   "engines": {
     "node": "20.x"
   },
-  "keywords": ["bonu", "marketplace", "firebase", "stripe", "mercadopago"],
+  "keywords": [
+    "bonu",
+    "marketplace",
+    "firebase",
+    "stripe",
+    "mercadopago"
+  ],
   "author": "Bonü Team",
   "license": "MIT"
 }
