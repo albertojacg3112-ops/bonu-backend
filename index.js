@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v6.1 PRODUCCIÓN (corregido BonuPay y MercadoPago)
+// index.js - Bonü Backend v6.1.1 PRODUCCIÓN (corregida URL de preferencias MP)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -353,7 +353,7 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
 /* ========== MERCADO PAGO ========== */
 const MERCADO_PAGO_API_URL = 'https://api.mercadopago.com/v1';
 
-// === CORREGIDO: Ahora devuelve detalles del error para depuración ===
+// === CORREGIDO: URL de creación de preferencia AHORA usa la URL correcta sin /v1 ===
 app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (req, res) => {
     if (!MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'Mercado Pago no configurado' });
@@ -374,7 +374,6 @@ app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (r
         
         // Verificar que el email del comprador no sea el mismo que el vendedor (si está en la cuenta de MP)
         const sellerEmail = (payer?.email || tokenData.customerEmail || '').toLowerCase();
-        // Si el email del comprador coincide con el de la cuenta de MP, devolver error claro
         // Nota: Esto es una validación básica; la API de MP también lo rechazará.
         
         const preferenceData = {
@@ -402,7 +401,8 @@ app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (r
         
         console.log('📤 Enviando preferencia a MP (MercadoPago):', JSON.stringify(preferenceData, null, 2));
         
-        const response = await fetch(`${MERCADO_PAGO_API_URL}/checkout/preferences`, {
+        // ✅ CORRECCIÓN: URL sin /v1
+        const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
             method: 'POST',
             headers: { 
                 'Authorization': `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}`, 
@@ -504,7 +504,7 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
 });
 
 /* ========== BONUPAY (usa API de MercadoPago como wrapper) ========== */
-// === CORREGIDO: Ahora devuelve detalles del error para depuración ===
+// === CORREGIDO: URL de creación de preferencia AHORA usa la URL correcta sin /v1 ===
 app.post('/api/payments/bonupay/create-preference', paymentLimiter, async (req, res) => {
     if (!BONUPAY_ACCESS_TOKEN && !MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'BonuPay no configurado' });
@@ -550,7 +550,8 @@ app.post('/api/payments/bonupay/create-preference', paymentLimiter, async (req, 
         
         console.log('📤 Enviando preferencia a MP (BonuPay):', JSON.stringify(preferenceData, null, 2));
         
-        const response = await fetch(`${MERCADO_PAGO_API_URL}/checkout/preferences`, {
+        // ✅ CORRECCIÓN: URL sin /v1
+        const response = await fetch('https://api.mercadopago.com/checkout/preferences', {
             method: 'POST',
             headers: { 
                 'Authorization': `Bearer ${accessToken}`, 
@@ -1266,7 +1267,7 @@ app.post('/api/webhook/paypal', async (req, res) => {
 /* ========== RUTAS PÚBLICAS ========== */
 app.get('/', (req, res) => res.json({ 
     success: true, 
-    message: 'Bonü Backend v6.1 - Producción', 
+    message: 'Bonü Backend v6.1.1 - Producción', 
     env: NODE_ENV,
     timestamp: new Date().toISOString()
 }));
@@ -2230,7 +2231,7 @@ app.use((err, req, res, next) => {
 /* ========== ARRANQUE ========== */
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
-    console.log('✅ Bonü Backend v6.1 - PRODUCCIÓN (corregido BonuPay y MercadoPago)');
+    console.log('✅ Bonü Backend v6.1.1 - PRODUCCIÓN (URL de MP corregida)');
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🌍 Entorno: ${NODE_ENV}`);
     console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
