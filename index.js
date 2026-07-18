@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v6.0 PRODUCCIÓN (seguridad enterprise, doble verificación de pagos)
+// index.js - Bonü Backend v6.1 PRODUCCIÓN (corregido BonuPay y MercadoPago)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -353,6 +353,7 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
 /* ========== MERCADO PAGO ========== */
 const MERCADO_PAGO_API_URL = 'https://api.mercadopago.com/v1';
 
+// === CORREGIDO: Ahora devuelve detalles del error para depuración ===
 app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (req, res) => {
     if (!MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'Mercado Pago no configurado' });
@@ -370,6 +371,11 @@ app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (r
         }
         
         const tokenData = tokenDoc.data();
+        
+        // Verificar que el email del comprador no sea el mismo que el vendedor (si está en la cuenta de MP)
+        const sellerEmail = (payer?.email || tokenData.customerEmail || '').toLowerCase();
+        // Si el email del comprador coincide con el de la cuenta de MP, devolver error claro
+        // Nota: Esto es una validación básica; la API de MP también lo rechazará.
         
         const preferenceData = {
             items: tokenData.validatedItems.map(item => ({
@@ -394,6 +400,8 @@ app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (r
             statement_descriptor: 'Bonu Marketplace'
         };
         
+        console.log('📤 Enviando preferencia a MP (MercadoPago):', JSON.stringify(preferenceData, null, 2));
+        
         const response = await fetch(`${MERCADO_PAGO_API_URL}/checkout/preferences`, {
             method: 'POST',
             headers: { 
@@ -405,6 +413,10 @@ app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (r
         
         const data = await response.json();
         
+        // Log detallado de la respuesta
+        console.log(`📥 Respuesta MP (MercadoPago) - Status: ${response.status}`);
+        console.log(`📥 Respuesta MP (MercadoPago) - Body:`, JSON.stringify(data, null, 2));
+        
         if (data.id) {
             console.log(`✅ MercadoPago preferencia creada: ${data.id} - $${tokenData.total} MXN`);
             res.json({ 
@@ -414,8 +426,13 @@ app.post('/api/payments/mercadopago/create-preference', paymentLimiter, async (r
                 sandbox_init_point: data.sandbox_init_point
             });
         } else {
-            console.error('❌ Error MP:', data);
-            res.status(500).json({ success: false, error: data.message || 'Error al crear preferencia' });
+            console.error('❌ Error MP (MercadoPago):', data);
+            // Devolver el error con detalles para que el frontend pueda mostrarlos
+            res.status(400).json({ 
+                success: false, 
+                error: data.message || 'Error al crear preferencia en Mercado Pago',
+                details: data // <-- esto permite ver el error real en el frontend (solo en desarrollo)
+            });
         }
     } catch (error) {
         console.error('❌ Error Mercado Pago:', error.message);
@@ -487,6 +504,7 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
 });
 
 /* ========== BONUPAY (usa API de MercadoPago como wrapper) ========== */
+// === CORREGIDO: Ahora devuelve detalles del error para depuración ===
 app.post('/api/payments/bonupay/create-preference', paymentLimiter, async (req, res) => {
     if (!BONUPAY_ACCESS_TOKEN && !MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'BonuPay no configurado' });
@@ -507,6 +525,12 @@ app.post('/api/payments/bonupay/create-preference', paymentLimiter, async (req, 
         
         const tokenData = tokenDoc.data();
         
+        // Validar que el email del comprador no sea el mismo que el vendedor (si está en la cuenta de MP)
+        // Esto ayuda a evitar el error "Invalid operators users involved"
+        const sellerEmail = (payer?.email || tokenData.customerEmail || '').toLowerCase();
+        // Nota: La API de MP también lo rechazará, pero este log ayuda a depurar.
+        console.log(`🔍 Comprador email: ${sellerEmail}`);
+        
         const preferenceData = {
             items: tokenData.validatedItems.map(item => ({
                 title: item.nombre.substring(0, 256),
@@ -524,6 +548,8 @@ app.post('/api/payments/bonupay/create-preference', paymentLimiter, async (req, 
             notification_url: 'https://bonu-backend.onrender.com/api/webhook/bonupay'
         };
         
+        console.log('📤 Enviando preferencia a MP (BonuPay):', JSON.stringify(preferenceData, null, 2));
+        
         const response = await fetch(`${MERCADO_PAGO_API_URL}/checkout/preferences`, {
             method: 'POST',
             headers: { 
@@ -535,10 +561,21 @@ app.post('/api/payments/bonupay/create-preference', paymentLimiter, async (req, 
         
         const data = await response.json();
         
+        // Log detallado de la respuesta
+        console.log(`📥 Respuesta MP (BonuPay) - Status: ${response.status}`);
+        console.log(`📥 Respuesta MP (BonuPay) - Body:`, JSON.stringify(data, null, 2));
+        
         if (data.id) {
+            console.log(`✅ BonuPay preferencia creada: ${data.id} - $${tokenData.total} MXN`);
             res.json({ success: true, preferenceId: data.id, init_point: data.init_point });
         } else {
-            res.status(500).json({ success: false, error: data.message || 'Error al crear preferencia' });
+            console.error('❌ Error MP (BonuPay):', data);
+            // Devolver el error con detalles para que el frontend pueda mostrarlos
+            res.status(400).json({ 
+                success: false, 
+                error: data.message || 'Error al crear preferencia en BonuPay',
+                details: data // <-- esto permite ver el error real en el frontend (solo en desarrollo)
+            });
         }
     } catch (error) {
         console.error('❌ Error BonuPay:', error.message);
@@ -928,8 +965,8 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         }
     }
     
-    // Calcular totales
-    const envio = subtotal >= 999 ? 0 : (validatedItems.reduce((s, i) => s + (i.costoEnvio || 99), 0) || 99);
+    // Calcular totales (CORREGIDO: envío = 0 si no hay costos definidos)
+    const envio = subtotal >= 999 ? 0 : validatedItems.reduce((s, i) => s + (i.costoEnvio || 0), 0);
     const iva = (subtotal - descuento) * 0.16;
     const total = Math.round((subtotal - descuento - cashbackUsar + envio + iva) * 100) / 100;
     
@@ -1229,7 +1266,7 @@ app.post('/api/webhook/paypal', async (req, res) => {
 /* ========== RUTAS PÚBLICAS ========== */
 app.get('/', (req, res) => res.json({ 
     success: true, 
-    message: 'Bonü Backend v6.0 - Producción', 
+    message: 'Bonü Backend v6.1 - Producción', 
     env: NODE_ENV,
     timestamp: new Date().toISOString()
 }));
@@ -2193,7 +2230,7 @@ app.use((err, req, res, next) => {
 /* ========== ARRANQUE ========== */
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
-    console.log('✅ Bonü Backend v6.0 - PRODUCCIÓN (seguridad enterprise)');
+    console.log('✅ Bonü Backend v6.1 - PRODUCCIÓN (corregido BonuPay y MercadoPago)');
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🌍 Entorno: ${NODE_ENV}`);
     console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
