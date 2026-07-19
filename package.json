@@ -1,24 +1,28 @@
 {
   "name": "bonu-backend",
-  "version": "4.2.0",
-  "description": "Bonü Backend - Pagos Reales, Webhooks, Seguridad Producción",
+  "version": "8.0.0",
+  "description": "Bonü Backend - Producción completa con WebSocket, Pagos, Notificaciones y Auditoría",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "echo \"Tests pendientes\" && exit 0",
-    "postinstall": "echo '✅ Bonü Backend v4.2 instalado'"
+    "postinstall": "echo '✅ Bonü Backend v8.0 instalado'"
   },
   "dependencies": {
     "@paypal/checkout-server-sdk": "^1.0.3",
+    "axios": "^1.14.0",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
     "express-rate-limit": "^7.2.0",
-    "firebase-admin": "^10.3.0",
+    "firebase-admin": "^13.7.0",
     "helmet": "^7.1.0",
+    "http": "^0.0.1-security",
     "mercadopago": "^2.0.15",
+    "morgan": "^1.10.0",
     "nodemailer": "^8.0.7",
+    "socket.io": "^4.7.2",
     "stripe": "^14.25.0"
   },
   "devDependencies": {
@@ -32,7 +36,9 @@
     "marketplace",
     "firebase",
     "stripe",
-    "mercadopago"
+    "mercadopago",
+    "websocket",
+    "paypal"
   ],
   "author": "Bonü Team",
   "license": "MIT"
