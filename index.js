@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v7.1 PRODUCCIÓN (Checkout API + Nota de Compra Profesional)
+// index.js - Bonü Backend v8.0 PRODUCCIÓN COMPLETA (Checkout API + Dashboard + WebSocket + Auditoría + Reportes)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -7,6 +7,8 @@ const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const http = require('http');
+const socketIo = require('socket.io');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -20,7 +22,6 @@ app.use(helmet({
 }));
 app.set('trust proxy', 1);
 
-// Rate limit global
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: NODE_ENV === 'production' ? 100 : 1000,
@@ -30,7 +31,6 @@ const globalLimiter = rateLimit({
 });
 app.use('/api/', globalLimiter);
 
-// Rate limit estricto para checkout y pagos
 const checkoutLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 3,
@@ -65,13 +65,11 @@ function formatCurrency(amount) {
     return new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(amount);
 }
 
-// Validación de email
 function isValidEmail(email) {
     const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return regex.test(email);
 }
 
-// Sanitización básica para prevenir XSS
 function sanitize(str) {
     if (!str) return '';
     return String(str)
@@ -82,7 +80,7 @@ function sanitize(str) {
         .replace(/'/g, '&#039;');
 }
 
-/* ========== NOTA DE COMPRA PROFESIONAL (CORREGIDA) ========== */
+/* ========== NOTA DE COMPRA PROFESIONAL ========== */
 async function sendConfirmationEmail(orderData) {
     if (!emailConfigurado || !emailTransporter) return false;
     
@@ -119,7 +117,6 @@ async function sendConfirmationEmail(orderData) {
     const safePhone = sanitize(phone);
     const safeCupon = sanitize(cuponAplicado);
     
-    // Generar HTML de productos
     const itemsHtml = (items || []).map(item => {
         const precioItem = (item.precioReal || item.precio || 0) * (item.cantidad || 1);
         return `
@@ -131,7 +128,6 @@ async function sendConfirmationEmail(orderData) {
         `;
     }).join('');
     
-    // Datos de la empresa
     const empresa = {
         nombre: 'Bonü Marketplace',
         direccion: '2da de Iztacihuatl #20, Col. El Popo, Atlixco, Puebla',
@@ -190,16 +186,12 @@ async function sendConfirmationEmail(orderData) {
 </head>
 <body>
     <div class="container">
-        <!-- HEADER -->
         <div class="header">
             <h1>⭐ Bonü</h1>
             <div class="subtitle">Global Marketplace Enterprise</div>
             <div class="badge">NOTA DE COMPRA</div>
         </div>
-        
-        <!-- BODY -->
         <div class="body">
-            <!-- Número y fecha -->
             <div class="section">
                 <div class="info-grid">
                     <div>
@@ -224,8 +216,6 @@ async function sendConfirmationEmail(orderData) {
                     </div>
                 </div>
             </div>
-            
-            <!-- DATOS DEL CLIENTE -->
             <div class="section">
                 <div class="section-title">📋 Datos del Cliente</div>
                 <div class="row"><span class="row-label">Nombre:</span><span class="row-value">${safeName}</span></div>
@@ -233,8 +223,6 @@ async function sendConfirmationEmail(orderData) {
                 ${safePhone ? `<div class="row"><span class="row-label">Teléfono:</span><span class="row-value">${safePhone}</span></div>` : ''}
                 ${safeAddress ? `<div class="row"><span class="row-label">Dirección:</span><span class="row-value">${safeAddress}</span></div>` : ''}
             </div>
-            
-            <!-- PRODUCTOS -->
             <div class="section">
                 <div class="section-title">📦 Productos</div>
                 <table>
@@ -250,8 +238,6 @@ async function sendConfirmationEmail(orderData) {
                     </tbody>
                 </table>
             </div>
-            
-            <!-- RESUMEN DE PAGO -->
             <div class="section">
                 <div class="section-title">💰 Resumen de Pago</div>
                 <div class="row"><span class="row-label">Subtotal:</span><span class="row-value">${formatCurrency(subtotal)}</span></div>
@@ -265,8 +251,6 @@ async function sendConfirmationEmail(orderData) {
                     <span class="row-value">${formatCurrency(total)}</span>
                 </div>
             </div>
-            
-            <!-- DATOS DE FACTURACIÓN (si se solicitaron) -->
             ${requireInvoice && (safeRfc || safeRazonSocial) ? `
             <div class="section">
                 <div class="section-title">📄 Datos de Facturación</div>
@@ -276,27 +260,19 @@ async function sendConfirmationEmail(orderData) {
                 ${safeUsoCFDI ? `<div class="row"><span class="row-label">Uso CFDI:</span><span class="row-value">${safeUsoCFDI}</span></div>` : ''}
             </div>
             ` : ''}
-            
-            <!-- AVISO LEGAL -->
             <div class="legal">
                 <strong>⚠️ IMPORTANTE:</strong> Este documento es una <strong>NOTA DE COMPRA</strong> y <strong>NO tiene validez fiscal</strong>.<br>
                 Para efectos fiscales, este comprobante no es un CFDI. Si requieres factura con validez fiscal, por favor contáctanos.
             </div>
-            
-            <!-- SOLICITAR FACTURA -->
             <div style="background:#f0fdf4;border-radius:8px;padding:14px 16px;margin:16px 0;border:1px solid #bbf7d0;">
                 <p style="font-size:14px;color:#166534;font-weight:500;margin-bottom:4px;">📧 ¿Necesitas factura con validez fiscal?</p>
                 <p style="font-size:13px;color:#4a4a4a;">Escríbenos a <strong>bonu.marketplace@gmail.com</strong> o llama al <strong>322 270 0732</strong> y te enviaremos tu factura CFDI.</p>
             </div>
-            
-            <!-- AGRADECIMIENTO -->
             <div style="text-align:center;padding:8px 0 4px 0;border-top:1px solid #f3f4f6;margin-top:8px;">
                 <p style="font-size:16px;font-weight:600;color:#1f2937;">¡Gracias por confiar en Bonü! ❤️</p>
                 <p style="font-size:13px;color:#6b7280;">Tu compra está en proceso. Recibirás actualizaciones por correo.</p>
             </div>
         </div>
-        
-        <!-- FOOTER -->
         <div class="footer">
             <div class="company">⭐ Bonü Marketplace</div>
             <div>2da de Iztacihuatl #20, Col. El Popo, Atlixco, Puebla</div>
@@ -444,7 +420,6 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token']
 }));
 
-// Webhooks
 app.use('/api/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use('/api/webhook/mercadopago', express.raw({ type: 'application/json' }));
 app.use('/api/webhook/bonupay', express.raw({ type: 'application/json' }));
@@ -538,7 +513,6 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
 /* ========== MERCADO PAGO ========== */
 const MERCADO_PAGO_API_URL = 'https://api.mercadopago.com/v1';
 
-// CHECKOUT API - MercadoPago
 app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req, res) => {
     if (!MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'Mercado Pago no configurado' });
@@ -625,7 +599,6 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
     }
 });
 
-// CHECKOUT API - BonuPay
 app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res) => {
     if (!BONUPAY_ACCESS_TOKEN && !MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'BonuPay no configurado' });
@@ -713,7 +686,6 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
     }
 });
 
-// Captura MercadoPago (compatibilidad)
 app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) => {
     const { paymentId, checkoutToken } = req.body;
     
@@ -771,7 +743,6 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
     }
 });
 
-// Captura BonuPay (compatibilidad)
 app.post('/api/payments/bonupay/capture', paymentLimiter, async (req, res) => {
     const { paymentId, checkoutToken } = req.body;
     
@@ -998,7 +969,7 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
     }
 });
 
-/* ========== CHECKOUT SEGURO (CON DATOS FISCALES) ========== */
+/* ========== CHECKOUT SEGURO ========== */
 app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -1012,7 +983,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         customerEmail, 
         customerName, 
         shippingAddress,
-        // Datos fiscales (nuevos)
         rfc = '',
         razonSocial = '',
         regimenFiscal = '',
@@ -1021,7 +991,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         phone = ''
     } = req.body;
     
-    // Validaciones básicas
     if (!cart?.length) {
         return res.status(400).json({ success: false, error: 'Carrito vacío' });
     }
@@ -1037,7 +1006,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         return res.status(400).json({ success: false, error: 'Email inválido' });
     }
     
-    // Sanitizar inputs
     const safeCustomerName = sanitize(customerName).substring(0, 200);
     const safeCustomerEmail = customerEmail.toLowerCase().trim().substring(0, 200);
     const safeRfc = sanitize(rfc).substring(0, 20);
@@ -1111,7 +1079,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         subtotal += precioReal * cantidad;
     }
     
-    // Validar cupón
     let descuento = 0;
     let cuponAplicado = null;
     
@@ -1140,7 +1107,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         }
     }
     
-    // Validar cashback
     let cashbackUsar = 0;
     let userCashbackBalance = 0;
     
@@ -1181,7 +1147,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         envio,
         iva,
         total,
-        // Datos fiscales
         rfc: safeRfc,
         razonSocial: safeRazonSocial,
         regimenFiscal: safeRegimenFiscal,
@@ -1205,8 +1170,8 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     });
 });
 
-/* ========== FUNCIÓN PARA CREAR ORDEN DESPUÉS DEL PAGO (con datos fiscales) ========== */
-async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmail = null) {
+/* ========== FUNCIÓN PARA CREAR ORDEN ========== */
+let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail = null) => {
     if (!firestore) throw new Error('Firestore no disponible');
     
     const tokenDoc = await firestore.collection('checkoutTokens').doc(checkoutToken).get();
@@ -1244,7 +1209,6 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
         cuponAplicado: data.cuponAplicado?.codigo || null,
         cashbackUsado: data.cashbackUsar || 0,
         paymentId: paymentId,
-        // Datos fiscales
         rfc: data.rfc || '',
         razonSocial: data.razonSocial || '',
         regimenFiscal: data.regimenFiscal || '',
@@ -1312,7 +1276,6 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
     
     await tokenDoc.ref.delete();
     
-    // Enviar NOTA DE COMPRA profesional
     if (data.customerEmail) {
         sendConfirmationEmail({
             orderId,
@@ -1323,7 +1286,6 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
             shippingAddress: data.shippingAddress,
             paymentMethod,
             date: orderData.fecha,
-            // Datos adicionales para la nota
             subtotal: data.subtotal || 0,
             envio: data.envio || 0,
             iva: data.iva || 0,
@@ -1343,11 +1305,9 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
     console.log(`✅ Orden creada: ${orderId} - ${paymentMethod} - $${data.total} MXN`);
     
     return { orderId };
-}
+};
 
 /* ========== WEBHOOKS ========== */
-
-// Stripe Webhook
 app.post('/api/webhook/stripe', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.sendStatus(200);
     
@@ -1384,7 +1344,6 @@ app.post('/api/webhook/stripe', async (req, res) => {
     res.sendStatus(200);
 });
 
-// MercadoPago Webhook
 app.post('/api/webhook/mercadopago', async (req, res) => {
     res.sendStatus(200);
     
@@ -1415,7 +1374,6 @@ app.post('/api/webhook/mercadopago', async (req, res) => {
     }
 });
 
-// BonuPay Webhook
 app.post('/api/webhook/bonupay', async (req, res) => {
     res.sendStatus(200);
     
@@ -1444,7 +1402,6 @@ app.post('/api/webhook/bonupay', async (req, res) => {
     }
 });
 
-// PayPal Webhook
 app.post('/api/webhook/paypal', async (req, res) => {
     res.sendStatus(200);
     
@@ -1477,7 +1434,7 @@ app.post('/api/webhook/paypal', async (req, res) => {
 /* ========== RUTAS PÚBLICAS ========== */
 app.get('/', (req, res) => res.json({ 
     success: true, 
-    message: 'Bonü Backend v7.1 - Producción (Nota de Compra Profesional)', 
+    message: 'Bonü Backend v8.0 - Producción Completa', 
     env: NODE_ENV,
     timestamp: new Date().toISOString()
 }));
@@ -1607,7 +1564,7 @@ app.get('/api/products/:id', async (req, res) => {
     }
 });
 
-/* ========== PROVEEDORES (CJ, TVC, SUNSKY) ========== */
+/* ========== PROVEEDORES ========== */
 let cjAccessToken = null, cjTokenExpiry = null, cjTokenPromise = null;
 
 async function getCJToken() {
@@ -1743,7 +1700,6 @@ app.post('/api/cj/import', verificarAdmin, async (req, res) => {
     }
 });
 
-// TVCmall y SunSky endpoints (mantener igual)
 app.get('/api/tvcmall/product/:sku', async (req, res) => {
     const { sku } = req.params;
     
@@ -1998,7 +1954,720 @@ app.post('/api/tracking/visita', async (req, res) => {
     }
 });
 
-/* ========== ADMIN ENDPOINTS ========== */
+/* ========== ADMIN ENDPOINTS MEJORADOS ========== */
+
+// Dashboard completo
+app.get('/api/admin/dashboard-full', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    try {
+        const [pedidosSnap, productosSnap, usuariosSnap, transaccionesSnap] = await Promise.all([
+            firestore.collection('pedidos').get(),
+            firestore.collection('productos').get(),
+            firestore.collection('clientes').get(),
+            firestore.collection('transacciones').get()
+        ]);
+        
+        const ordenes = [];
+        pedidosSnap.forEach(doc => ordenes.push({ id: doc.id, ...doc.data() }));
+        
+        const hoy = new Date().toISOString().split('T')[0];
+        let totalVentas = 0;
+        let totalOrdenes = ordenes.length;
+        let estados = { pendiente: 0, pagado: 0, enviado: 0, entregado: 0, cancelado: 0 };
+        
+        const ventasPorDia = Array(7).fill(0);
+        const diasSemana = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+        const hoyDate = new Date();
+        
+        const productSales = {};
+        
+        ordenes.forEach(o => {
+            totalVentas += o.total || 0;
+            if (estados[o.estado] !== undefined) estados[o.estado]++;
+            
+            if (o.fecha) {
+                const fecha = new Date(o.fecha);
+                const diff = Math.floor((hoyDate - fecha) / (1000 * 60 * 60 * 24));
+                if (diff >= 0 && diff < 7) {
+                    ventasPorDia[6 - diff] += o.total || 0;
+                }
+            }
+            
+            if (o.items) {
+                o.items.forEach(item => {
+                    const key = item.id || item.nombre;
+                    if (!productSales[key]) {
+                        productSales[key] = { nombre: item.nombre, cantidad: 0, total: 0 };
+                    }
+                    productSales[key].cantidad += item.cantidad || 1;
+                    productSales[key].total += (item.precio || 0) * (item.cantidad || 1);
+                });
+            }
+        });
+        
+        const topProducts = Object.values(productSales)
+            .sort((a, b) => b.cantidad - a.cantidad)
+            .slice(0, 5);
+        
+        const lowStockProducts = [];
+        productosSnap.forEach(doc => {
+            const p = doc.data();
+            if ((p.stock || 0) < 5) {
+                lowStockProducts.push({ id: doc.id, nombre: p.nombre, stock: p.stock || 0 });
+            }
+        });
+        
+        const paymentMethods = {};
+        ordenes.forEach(o => {
+            const method = o.pasarela || 'Desconocido';
+            paymentMethods[method] = (paymentMethods[method] || 0) + 1;
+        });
+        
+        const recentOrders = ordenes
+            .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
+            .slice(0, 5);
+        
+        let visits = 0;
+        try {
+            const visitasDoc = await firestore.collection('config').doc('visitas').get();
+            if (visitasDoc.exists) visits = visitasDoc.data().count || 0;
+        } catch (e) {}
+        
+        res.json({
+            success: true,
+            data: {
+                totalVentas,
+                totalOrdenes,
+                totalUsuarios: usuariosSnap.size,
+                totalProductos: productosSnap.size,
+                visits,
+                topProducts,
+                lowStock: lowStockProducts,
+                salesChart: {
+                    labels: diasSemana,
+                    data: ventasPorDia
+                },
+                paymentMethods: {
+                    labels: Object.keys(paymentMethods),
+                    data: Object.values(paymentMethods)
+                },
+                recentOrders: recentOrders.map(o => ({
+                    id: o.id,
+                    usuario: o.usuario || 'Cliente',
+                    total: o.total || 0,
+                    estado: o.estado || 'pagado',
+                    fecha: o.fecha
+                })),
+                estados
+            }
+        });
+    } catch (error) {
+        console.error('Error en dashboard-full:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Órdenes con paginación
+app.get('/api/admin/ordenes-full', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { estado, search, page = 1, limit = 10 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    try {
+        let query = firestore.collection('pedidos');
+        
+        if (estado) {
+            query = query.where('estado', '==', estado);
+        }
+        
+        const snapshot = await query.orderBy('fecha', 'desc').get();
+        let ordenes = [];
+        snapshot.forEach(doc => ordenes.push({ id: doc.id, ...doc.data() }));
+        
+        if (search) {
+            const s = search.toLowerCase();
+            ordenes = ordenes.filter(o => 
+                (o.id || '').toLowerCase().includes(s) ||
+                (o.usuario || '').toLowerCase().includes(s) ||
+                (o.emailCliente || '').toLowerCase().includes(s)
+            );
+        }
+        
+        const total = ordenes.length;
+        const paginados = ordenes.slice(skip, skip + parseInt(limit));
+        
+        res.json({
+            success: true,
+            data: paginados,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total,
+                pages: Math.ceil(total / parseInt(limit))
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Detalle de orden
+app.get('/api/admin/ordenes/:id', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    try {
+        const doc = await firestore.collection('pedidos').doc(req.params.id).get();
+        
+        if (!doc.exists) {
+            return res.status(404).json({ success: false, error: 'Orden no encontrada' });
+        }
+        
+        res.json({ success: true, orden: { id: doc.id, ...doc.data() } });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Usuarios con filtros
+app.get('/api/admin/usuarios-full', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { tipo, search, gastoMin, gastoMax, page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    try {
+        let query = firestore.collection('clientes');
+        let usuarios = [];
+        const snapshot = await query.get();
+        snapshot.forEach(doc => usuarios.push({ id: doc.id, ...doc.data() }));
+        
+        if (tipo) {
+            usuarios = usuarios.filter(u => u.tipo === tipo);
+        }
+        
+        if (search) {
+            const s = search.toLowerCase();
+            usuarios = usuarios.filter(u => 
+                (u.nombre || '').toLowerCase().includes(s) ||
+                (u.email || '').toLowerCase().includes(s)
+            );
+        }
+        
+        const pedidosSnap = await firestore.collection('pedidos').get();
+        const gastosPorUsuario = {};
+        pedidosSnap.forEach(doc => {
+            const o = doc.data();
+            if (o.emailCliente) {
+                gastosPorUsuario[o.emailCliente] = (gastosPorUsuario[o.emailCliente] || 0) + (o.total || 0);
+            }
+        });
+        
+        if (gastoMin || gastoMax) {
+            usuarios = usuarios.filter(u => {
+                const gasto = gastosPorUsuario[u.email] || 0;
+                if (gastoMin && gasto < parseFloat(gastoMin)) return false;
+                if (gastoMax && gasto > parseFloat(gastoMax)) return false;
+                return true;
+            });
+        }
+        
+        const total = usuarios.length;
+        const paginados = usuarios.slice(skip, skip + parseInt(limit));
+        
+        const result = paginados.map(u => ({
+            ...u,
+            totalSpent: gastosPorUsuario[u.email] || 0
+        }));
+        
+        res.json({
+            success: true,
+            data: result,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total,
+                pages: Math.ceil(total / parseInt(limit))
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Vendedores con comisiones
+app.get('/api/admin/vendedores-full', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    try {
+        const snapshot = await firestore.collection('vendedores').get();
+        const vendedores = [];
+        snapshot.forEach(doc => vendedores.push({ id: doc.id, ...doc.data() }));
+        
+        const pedidosSnap = await firestore.collection('pedidos').get();
+        const comisionesPorVendedor = {};
+        
+        pedidosSnap.forEach(doc => {
+            const o = doc.data();
+            if (o.items) {
+                o.items.forEach(item => {
+                    const prov = item.proveedor || 'Bonü';
+                    if (!comisionesPorVendedor[prov]) {
+                        comisionesPorVendedor[prov] = { totalVentas: 0, comisionTotal: 0, comisionPagada: 0 };
+                    }
+                    const precio = (item.precio || 0) * (item.cantidad || 1);
+                    comisionesPorVendedor[prov].totalVentas += precio;
+                    comisionesPorVendedor[prov].comisionTotal += precio * 0.05;
+                });
+            }
+        });
+        
+        const result = vendedores.map(v => ({
+            ...v,
+            totalVentas: comisionesPorVendedor[v.nombre]?.totalVentas || 0,
+            comisionTotal: comisionesPorVendedor[v.nombre]?.comisionTotal || 0,
+            comisionPagada: comisionesPorVendedor[v.nombre]?.comisionPagada || 0
+        }));
+        
+        res.json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Finanzas - Balance
+app.get('/api/admin/finanzas/balance', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { startDate, endDate } = req.query;
+    
+    try {
+        let query = firestore.collection('pedidos');
+        const snapshot = await query.get();
+        let ordenes = [];
+        snapshot.forEach(doc => ordenes.push({ id: doc.id, ...doc.data() }));
+        
+        if (startDate) {
+            const inicio = new Date(startDate);
+            ordenes = ordenes.filter(o => new Date(o.fecha) >= inicio);
+        }
+        if (endDate) {
+            const fin = new Date(endDate);
+            fin.setHours(23, 59, 59, 999);
+            ordenes = ordenes.filter(o => new Date(o.fecha) <= fin);
+        }
+        
+        let ingresos = 0;
+        let comisiones = 0;
+        let ivaCobrado = 0;
+        const ventasPorMes = {};
+        
+        ordenes.forEach(o => {
+            ingresos += o.total || 0;
+            comisiones += (o.total || 0) * 0.05;
+            ivaCobrado += (o.total || 0) * 0.16;
+            
+            const fecha = new Date(o.fecha);
+            const mesKey = `${fecha.getFullYear()}-${String(fecha.getMonth()+1).padStart(2,'0')}`;
+            if (!ventasPorMes[mesKey]) ventasPorMes[mesKey] = 0;
+            ventasPorMes[mesKey] += o.total || 0;
+        });
+        
+        const gananciaNeta = ingresos - comisiones;
+        
+        const mesesOrdenados = Object.keys(ventasPorMes).sort();
+        const labels = mesesOrdenados.map(k => {
+            const [year, month] = k.split('-');
+            return `${month}/${year.slice(2)}`;
+        });
+        const data = mesesOrdenados.map(k => ventasPorMes[k]);
+        
+        res.json({
+            success: true,
+            data: {
+                ingresos,
+                comisiones,
+                gananciaNeta,
+                ivaCobrado,
+                ivaPagado: comisiones * 0.16,
+                ivaAPagar: ivaCobrado - (comisiones * 0.16),
+                ventasPorMes: {
+                    labels,
+                    data
+                }
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Auditoría
+app.get('/api/admin/auditoria', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { limit = 100, page = 1 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    try {
+        const snapshot = await firestore.collection('auditoria')
+            .orderBy('fecha', 'desc')
+            .limit(parseInt(limit))
+            .get();
+        
+        const logs = [];
+        snapshot.forEach(doc => logs.push({ id: doc.id, ...doc.data() }));
+        
+        res.json({
+            success: true,
+            data: logs,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: logs.length
+            }
+        });
+    } catch (error) {
+        res.json({ success: true, data: [], pagination: { page: 1, limit: 100, total: 0 } });
+    }
+});
+
+app.post('/api/admin/auditoria', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { accion, detalle } = req.body;
+    
+    if (!accion) {
+        return res.status(400).json({ success: false, error: 'Acción requerida' });
+    }
+    
+    try {
+        await firestore.collection('auditoria').add({
+            fecha: new Date().toISOString(),
+            admin: req.user?.email || 'Sistema',
+            accion,
+            detalle: detalle || '',
+            ip: req.ip
+        });
+        
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Reportes avanzados
+app.post('/api/admin/reportes/generar', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { tipo, startDate, endDate, format } = req.body;
+    
+    if (!tipo || !startDate || !endDate) {
+        return res.status(400).json({ success: false, error: 'Tipo y fechas requeridos' });
+    }
+    
+    try {
+        const inicio = new Date(startDate);
+        const fin = new Date(endDate);
+        fin.setHours(23, 59, 59, 999);
+        
+        const snapshot = await firestore.collection('pedidos').get();
+        let pedidos = [];
+        snapshot.forEach(doc => {
+            const o = doc.data();
+            const fecha = new Date(o.fecha);
+            if (fecha >= inicio && fecha <= fin) {
+                pedidos.push({ id: doc.id, ...o });
+            }
+        });
+        
+        let resultado = {};
+        
+        switch (tipo) {
+            case 'ventas': {
+                const total = pedidos.reduce((s, o) => s + (o.total || 0), 0);
+                resultado = {
+                    total,
+                    cantidad: pedidos.length,
+                    promedio: pedidos.length ? total / pedidos.length : 0,
+                    datos: pedidos.map(o => ({
+                        id: o.id,
+                        cliente: o.usuario || 'Cliente',
+                        total: o.total || 0,
+                        fecha: o.fecha
+                    }))
+                };
+                break;
+            }
+            case 'productos': {
+                const prodCount = {};
+                pedidos.forEach(o => {
+                    (o.items || []).forEach(item => {
+                        const key = item.id || item.nombre;
+                        if (!prodCount[key]) {
+                            prodCount[key] = { nombre: item.nombre, cantidad: 0, total: 0 };
+                        }
+                        prodCount[key].cantidad += item.cantidad || 1;
+                        prodCount[key].total += (item.precio || 0) * (item.cantidad || 1);
+                    });
+                });
+                const sorted = Object.values(prodCount).sort((a, b) => b.cantidad - a.cantidad);
+                resultado = { productos: sorted };
+                break;
+            }
+            case 'clientes': {
+                const clientes = {};
+                pedidos.forEach(o => {
+                    const email = o.emailCliente || o.usuario;
+                    if (!clientes[email]) {
+                        clientes[email] = { nombre: o.usuario || email, email, total: 0, compras: 0 };
+                    }
+                    clientes[email].total += o.total || 0;
+                    clientes[email].compras += 1;
+                });
+                const sorted = Object.values(clientes).sort((a, b) => b.total - a.total);
+                resultado = { clientes: sorted };
+                break;
+            }
+            case 'vendedores': {
+                const vendedores = {};
+                pedidos.forEach(o => {
+                    (o.items || []).forEach(item => {
+                        const prov = item.proveedor || 'Bonü';
+                        if (!vendedores[prov]) {
+                            vendedores[prov] = { nombre: prov, total: 0, items: 0 };
+                        }
+                        vendedores[prov].total += (item.precio || 0) * (item.cantidad || 1);
+                        vendedores[prov].items += item.cantidad || 1;
+                    });
+                });
+                const sorted = Object.values(vendedores).sort((a, b) => b.total - a.total);
+                resultado = { vendedores: sorted };
+                break;
+            }
+            case 'impuestos': {
+                const totalIva = pedidos.reduce((s, o) => s + ((o.total || 0) * 0.16), 0);
+                resultado = {
+                    totalVentas: pedidos.reduce((s, o) => s + (o.total || 0), 0),
+                    totalIVA: totalIva,
+                    transacciones: pedidos.length
+                };
+                break;
+            }
+            default:
+                return res.status(400).json({ success: false, error: 'Tipo de reporte inválido' });
+        }
+        
+        res.json({ success: true, data: resultado });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Generar factura
+app.post('/api/admin/factura/generar', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { orderId } = req.body;
+    
+    if (!orderId) {
+        return res.status(400).json({ success: false, error: 'orderId requerido' });
+    }
+    
+    try {
+        const doc = await firestore.collection('pedidos').doc(orderId).get();
+        
+        if (!doc.exists) {
+            return res.status(404).json({ success: false, error: 'Orden no encontrada' });
+        }
+        
+        const orden = doc.data();
+        const invoiceNumber = `INV-${Date.now()}-${orderId.slice(-6)}`;
+        
+        await firestore.collection('transacciones').add({
+            ordenId: orderId,
+            monto: orden.total || 0,
+            pasarela: orden.pasarela || 'Facturación',
+            estado: 'facturada',
+            invoiceNumber,
+            fecha: new Date().toISOString()
+        });
+        
+        await firestore.collection('pedidos').doc(orderId).update({
+            invoiceNumber,
+            facturado: true,
+            fechaFactura: new Date().toISOString()
+        });
+        
+        await firestore.collection('auditoria').add({
+            fecha: new Date().toISOString(),
+            admin: req.user?.email || 'Sistema',
+            accion: 'Generación de factura',
+            detalle: `Factura ${invoiceNumber} generada para orden ${orderId}`,
+            ip: req.ip
+        });
+        
+        res.json({ 
+            success: true, 
+            invoiceNumber,
+            message: `Factura ${invoiceNumber} generada correctamente`
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Stock bajo
+app.get('/api/admin/inventory/low-stock', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { threshold = 5 } = req.query;
+    
+    try {
+        const snapshot = await firestore.collection('productos').get();
+        const lowStock = [];
+        
+        snapshot.forEach(doc => {
+            const p = doc.data();
+            if ((p.stock || 0) < parseInt(threshold)) {
+                lowStock.push({ id: doc.id, ...p });
+            }
+        });
+        
+        res.json({ 
+            success: true, 
+            data: lowStock,
+            count: lowStock.length
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Movimientos de inventario
+app.get('/api/admin/inventory/movements', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { productId, limit = 50 } = req.query;
+    
+    try {
+        let query = firestore.collection('inventoryMovements');
+        
+        if (productId) {
+            query = query.where('productId', '==', productId);
+        }
+        
+        const snapshot = await query.orderBy('createdAt', 'desc').limit(parseInt(limit)).get();
+        const movements = [];
+        snapshot.forEach(doc => movements.push({ id: doc.id, ...doc.data() }));
+        
+        res.json({ success: true, data: movements });
+    } catch (error) {
+        res.json({ success: true, data: [] });
+    }
+});
+
+app.post('/api/admin/inventory/movement', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    const { productId, type, quantity, reference } = req.body;
+    
+    if (!productId || !type || quantity === undefined) {
+        return res.status(400).json({ success: false, error: 'productId, type y quantity requeridos' });
+    }
+    
+    try {
+        const productRef = firestore.collection('productos').doc(productId);
+        const productDoc = await productRef.get();
+        
+        if (!productDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Producto no encontrado' });
+        }
+        
+        const product = productDoc.data();
+        const previousStock = product.stock || 0;
+        let newStock = previousStock;
+        
+        switch (type) {
+            case 'PURCHASE':
+            case 'RETURN':
+                newStock = previousStock + parseInt(quantity);
+                break;
+            case 'SALE':
+            case 'TRANSFER':
+                newStock = previousStock - parseInt(quantity);
+                break;
+            case 'ADJUSTMENT':
+                newStock = parseInt(quantity);
+                break;
+            default:
+                return res.status(400).json({ success: false, error: 'Tipo de movimiento inválido' });
+        }
+        
+        if (newStock < 0) {
+            return res.status(400).json({ success: false, error: 'Stock insuficiente' });
+        }
+        
+        await productRef.update({ stock: newStock });
+        
+        await firestore.collection('inventoryMovements').add({
+            productId,
+            type,
+            quantity: parseInt(quantity),
+            previousStock,
+            newStock,
+            reference: reference || null,
+            createdBy: req.user?.email || 'Sistema',
+            createdAt: new Date().toISOString()
+        });
+        
+        await firestore.collection('auditoria').add({
+            fecha: new Date().toISOString(),
+            admin: req.user?.email || 'Sistema',
+            accion: 'Movimiento de inventario',
+            detalle: `${type} - Producto: ${product.nombre}, Cantidad: ${quantity}, Stock: ${previousStock} → ${newStock}`,
+            ip: req.ip
+        });
+        
+        res.json({ 
+            success: true, 
+            message: 'Movimiento registrado',
+            previousStock,
+            newStock
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Admin endpoints existentes
 app.get('/api/admin/trafico', verificarAdmin, async (req, res) => {
     if (!firestore) return res.json({ total: 0, hoy: 0, mes: 0 });
     
@@ -2065,6 +2734,19 @@ app.patch('/api/admin/ordenes/:id/estado', verificarAdmin, async (req, res) => {
         });
         
         res.json({ success: true, mensaje: 'Estado actualizado' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.delete('/api/admin/ordenes/:id', verificarAdmin, async (req, res) => {
+    if (!firestore) {
+        return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    }
+    
+    try {
+        await firestore.collection('pedidos').doc(req.params.id).delete();
+        res.json({ success: true, mensaje: 'Orden eliminada' });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -2215,7 +2897,6 @@ app.delete('/api/admin/productos/:id', verificarAdmin, async (req, res) => {
     }
 });
 
-// ✅ Admin cupones
 app.get('/api/admin/cupones', verificarAdmin, async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -2275,7 +2956,6 @@ app.delete('/api/admin/cupones/:id', verificarAdmin, async (req, res) => {
     }
 });
 
-// ✅ Admin solicitudes de retiro
 app.get('/api/admin/withdraw-requests', verificarAdmin, async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -2425,6 +3105,105 @@ app.get('/og/producto/:id', async (req, res) => {
     }
 });
 
+/* ========== WEBSOCKET ========== */
+const server = http.createServer(app);
+const io = socketIo(server, {
+    cors: {
+        origin: allowedOrigins,
+        methods: ['GET', 'POST'],
+        credentials: true
+    },
+    transports: ['websocket', 'polling']
+});
+
+io.use(async (socket, next) => {
+    const token = socket.handshake.auth.token;
+    
+    if (!token) {
+        return next(new Error('Token requerido'));
+    }
+    
+    try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        socket.userId = decoded.uid;
+        socket.email = decoded.email;
+        
+        let esAdmin = decoded.admin === true;
+        if (!esAdmin && firestore) {
+            const adminDoc = await firestore.collection('admins').doc(decoded.uid).get();
+            esAdmin = adminDoc.exists;
+        }
+        
+        socket.isAdmin = esAdmin;
+        next();
+    } catch (error) {
+        console.error('❌ Error en autenticación WebSocket:', error.message);
+        next(new Error('Token inválido'));
+    }
+});
+
+io.on('connection', (socket) => {
+    console.log(`🔌 Cliente conectado: ${socket.id} - ${socket.email || 'anonimo'}`);
+    
+    if (socket.isAdmin) {
+        socket.join('admin-room');
+        console.log(`👑 Admin ${socket.email} unido a admin-room`);
+    }
+    
+    if (socket.userId) {
+        socket.join(`user-${socket.userId}`);
+    }
+    
+    socket.on('ping', () => {
+        socket.emit('pong', { timestamp: Date.now() });
+    });
+    
+    socket.on('disconnect', () => {
+        console.log(`🔌 Cliente desconectado: ${socket.id}`);
+    });
+});
+
+function emitNewOrder(orderData) {
+    io.to('admin-room').emit('new-order', {
+        orderId: orderData.id || orderData.orderId,
+        customer: orderData.usuario || orderData.customerName || 'Cliente',
+        total: orderData.total || 0,
+        timestamp: new Date().toISOString()
+    });
+    console.log(`📦 Notificación de nueva orden enviada: ${orderData.id || orderData.orderId}`);
+}
+
+function emitPaymentFailed(orderData) {
+    io.to('admin-room').emit('payment-failed', {
+        orderId: orderData.id || orderData.orderId,
+        customer: orderData.usuario || orderData.customerName || 'Cliente',
+        amount: orderData.total || 0,
+        timestamp: new Date().toISOString()
+    });
+    console.log(`⚠️ Notificación de pago fallido enviada: ${orderData.id || orderData.orderId}`);
+}
+
+function emitLowStock(productData) {
+    io.to('admin-room').emit('low-stock-alert', {
+        productId: productData.id,
+        productName: productData.nombre,
+        currentStock: productData.stock || 0,
+        threshold: 5,
+        timestamp: new Date().toISOString()
+    });
+    console.log(`⚠️ Alerta de stock bajo enviada: ${productData.nombre}`);
+}
+
+function emitNewVendor(vendorData) {
+    io.to('admin-room').emit('new-vendor', {
+        vendorId: vendorData.id,
+        name: vendorData.nombre,
+        email: vendorData.email,
+        timestamp: new Date().toISOString()
+    });
+    console.log(`📢 Notificación de nuevo vendedor: ${vendorData.nombre}`);
+}
+
 /* ========== MANEJO DE ERRORES ========== */
 app.use((req, res) => res.status(404).json({ error: 'Endpoint no encontrado' }));
 
@@ -2437,9 +3216,9 @@ app.use((err, req, res, next) => {
 });
 
 /* ========== ARRANQUE ========== */
-const server = app.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
-    console.log('✅ Bonü Backend v7.1 - PRODUCCIÓN (Checkout API + Nota de Compra Profesional)');
+    console.log('✅ Bonü Backend v8.0 - PRODUCCIÓN COMPLETA');
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🌍 Entorno: ${NODE_ENV}`);
     console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
@@ -2453,6 +3232,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '❌'}`);
     console.log('==================================================');
     console.log('📄 NOTA DE COMPRA PROFESIONAL ACTIVADA');
+    console.log('🔌 WEBSOCKET ACTIVADO - Notificaciones en tiempo real');
+    console.log('📊 DASHBOARD COMPLETO - Analytics y reportes');
+    console.log('📋 AUDITORÍA - Log de actividades');
+    console.log('💰 FINANZAS - Balance y reportes fiscales');
     console.log(`🏢 Bonü Marketplace - RFC: CAGJ791031159`);
     console.log(`📧 bonu.marketplace@gmail.com | 📞 322 270 0732`);
     console.log('==================================================');
@@ -2468,4 +3251,4 @@ process.on('SIGINT', () => {
     server.close(() => process.exit(0));
 });
 
-module.exports = app;
+module.exports = { app, io, emitNewOrder, emitPaymentFailed, emitLowStock, emitNewVendor };
