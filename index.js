@@ -1,4 +1,4 @@
-// index.js - Bonü Backend v7.0 PRODUCCIÓN (Checkout API para BonuPay y MercadoPago)
+// index.js - Bonü Backend v7.1 PRODUCCIÓN (Checkout API + Nota de Compra Profesional)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -82,56 +82,253 @@ function sanitize(str) {
         .replace(/'/g, '&#039;');
 }
 
+/* ========== NOTA DE COMPRA PROFESIONAL (CORREGIDA) ========== */
 async function sendConfirmationEmail(orderData) {
     if (!emailConfigurado || !emailTransporter) return false;
-    const { orderId, customerEmail, customerName, total, items, shippingAddress, paymentMethod, date } = orderData;
+    
+    const { 
+        orderId, 
+        customerEmail, 
+        customerName, 
+        total, 
+        items, 
+        shippingAddress, 
+        paymentMethod, 
+        date,
+        subtotal = 0,
+        envio = 0,
+        iva = 0,
+        descuento = 0,
+        cashbackUsado = 0,
+        rfc = '',
+        razonSocial = '',
+        regimenFiscal = '',
+        usoCFDI = '',
+        requireInvoice = false,
+        phone = '',
+        estado = 'pagado',
+        cuponAplicado = ''
+    } = orderData;
     
     const safeName = sanitize(customerName);
-    const itemsHtml = (items || []).map(item => `
-        <tr>
-            <td style="padding:8px;">${sanitize(item.nombre)}</td>
-            <td style="padding:8px;">x${item.cantidad || 1}</td>
-            <td style="padding:8px;text-align:right;">${formatCurrency((item.precioReal || item.precio || 0) * (item.cantidad || 1))}</td>
-        </tr>
-    `).join('');
+    const safeAddress = sanitize(typeof shippingAddress === 'string' ? shippingAddress : shippingAddress?.direccion || '');
+    const safeRfc = sanitize(rfc);
+    const safeRazonSocial = sanitize(razonSocial);
+    const safeRegimenFiscal = sanitize(regimenFiscal);
+    const safeUsoCFDI = sanitize(usoCFDI);
+    const safePhone = sanitize(phone);
+    const safeCupon = sanitize(cuponAplicado);
     
-    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Confirmación Bonü</title></head>
-    <body style="font-family:Arial,sans-serif;">
-        <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;">
-            <div style="background:linear-gradient(135deg,#facc15,#fbbf24);padding:24px;text-align:center;">
-                <h1 style="color:#000;">✨ Bonü ✨</h1><p>¡Gracias por tu compra!</p>
+    // Generar HTML de productos
+    const itemsHtml = (items || []).map(item => {
+        const precioItem = (item.precioReal || item.precio || 0) * (item.cantidad || 1);
+        return `
+            <tr>
+                <td style="padding:8px 4px;border-bottom:1px solid #e5e7eb;font-size:14px;">${sanitize(item.nombre)}</td>
+                <td style="padding:8px 4px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:center;">x${item.cantidad || 1}</td>
+                <td style="padding:8px 4px;border-bottom:1px solid #e5e7eb;font-size:14px;text-align:right;">${formatCurrency(precioItem)}</td>
+            </tr>
+        `;
+    }).join('');
+    
+    // Datos de la empresa
+    const empresa = {
+        nombre: 'Bonü Marketplace',
+        direccion: '2da de Iztacihuatl #20, Col. El Popo, Atlixco, Puebla',
+        telefono: '322 270 0732',
+        email: 'bonu.marketplace@gmail.com',
+        rfc: 'CAGJ791031159',
+        sitio: 'https://bonü.com'
+    };
+    
+    const fechaFormateada = new Date(date).toLocaleString('es-MX', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+    
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nota de Compra #${orderId}</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family: 'Arial', 'Helvetica', sans-serif; background:#f5f5f5; }
+        .container { max-width:650px; margin:0 auto; background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 4px 20px rgba(0,0,0,0.08); }
+        .header { background:linear-gradient(135deg,#facc15,#fbbf24); padding:28px 32px; text-align:center; border-bottom:4px solid #eab308; }
+        .header h1 { font-size:28px; font-weight:800; color:#000000; letter-spacing:-0.5px; }
+        .header .subtitle { font-size:14px; color:#4a4a4a; margin-top:4px; font-weight:500; }
+        .header .badge { display:inline-block; background:#000000; color:#facc15; padding:4px 16px; border-radius:20px; font-size:12px; font-weight:700; margin-top:8px; letter-spacing:0.5px; }
+        .body { padding:28px 32px; }
+        .section { margin-bottom:24px; }
+        .section-title { font-size:14px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.5px; border-bottom:2px solid #f3f4f6; padding-bottom:8px; margin-bottom:12px; }
+        .row { display:flex; justify-content:space-between; padding:6px 0; font-size:14px; }
+        .row-label { color:#6b7280; }
+        .row-value { font-weight:500; color:#1f2937; }
+        .row-value.bold { font-weight:700; }
+        .total-row { border-top:2px solid #facc15; padding-top:12px; margin-top:8px; }
+        .total-row .row-value { font-size:20px; font-weight:800; color:#10b981; }
+        table { width:100%; border-collapse:collapse; margin:8px 0; }
+        table th { text-align:left; font-size:12px; color:#6b7280; text-transform:uppercase; font-weight:600; padding:8px 4px; border-bottom:2px solid #e5e7eb; }
+        table td { padding:8px 4px; font-size:14px; border-bottom:1px solid #f3f4f6; }
+        .legal { background:#fef9c3; border-left:4px solid #facc15; padding:12px 16px; border-radius:8px; margin:16px 0; font-size:13px; color:#4a4a4a; }
+        .legal strong { color:#000000; }
+        .footer { background:#111827; padding:24px 32px; text-align:center; color:#9ca3af; font-size:13px; }
+        .footer a { color:#facc15; text-decoration:none; }
+        .footer a:hover { text-decoration:underline; }
+        .footer .company { color:#ffffff; font-weight:600; margin-bottom:4px; }
+        .footer .contact { font-size:12px; margin-top:4px; }
+        .badge-pagado { display:inline-block; background:#dcfce7; color:#166534; padding:2px 12px; border-radius:20px; font-size:12px; font-weight:600; }
+        .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px 16px; }
+        @media (max-width:480px) { .info-grid { grid-template-columns:1fr; } .header { padding:20px; } .header h1 { font-size:22px; } .body { padding:20px; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- HEADER -->
+        <div class="header">
+            <h1>⭐ Bonü</h1>
+            <div class="subtitle">Global Marketplace Enterprise</div>
+            <div class="badge">NOTA DE COMPRA</div>
+        </div>
+        
+        <!-- BODY -->
+        <div class="body">
+            <!-- Número y fecha -->
+            <div class="section">
+                <div class="info-grid">
+                    <div>
+                        <div class="row">
+                            <span class="row-label">Número:</span>
+                            <span class="row-value bold">#${orderId}</span>
+                        </div>
+                        <div class="row">
+                            <span class="row-label">Fecha:</span>
+                            <span class="row-value">${fechaFormateada}</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="row">
+                            <span class="row-label">Estado:</span>
+                            <span class="badge-pagado">${estado === 'pagado' ? '✅ Pagado' : estado}</span>
+                        </div>
+                        <div class="row">
+                            <span class="row-label">Método de pago:</span>
+                            <span class="row-value">${paymentMethod}</span>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div style="padding:24px;">
-                <p>Hola <strong>${safeName}</strong>,</p>
-                <p>Tu pedido <strong>#${orderId}</strong> ha sido confirmado.</p>
-                <p><strong>Total:</strong> ${formatCurrency(total)}</p>
-                <p><strong>Método de pago:</strong> ${paymentMethod}</p>
-                <p><strong>Fecha:</strong> ${new Date(date).toLocaleString()}</p>
-                <h3>Productos:</h3>
-                <table style="width:100%;">${itemsHtml}</table>
-                ${shippingAddress ? `<p><strong>Envío a:</strong> ${sanitize(typeof shippingAddress === 'string' ? shippingAddress : shippingAddress.direccion || '')}</p>` : ''}
-                <p>Gracias por confiar en Bonü ❤️</p>
+            
+            <!-- DATOS DEL CLIENTE -->
+            <div class="section">
+                <div class="section-title">📋 Datos del Cliente</div>
+                <div class="row"><span class="row-label">Nombre:</span><span class="row-value">${safeName}</span></div>
+                <div class="row"><span class="row-label">Email:</span><span class="row-value">${sanitize(customerEmail)}</span></div>
+                ${safePhone ? `<div class="row"><span class="row-label">Teléfono:</span><span class="row-value">${safePhone}</span></div>` : ''}
+                ${safeAddress ? `<div class="row"><span class="row-label">Dirección:</span><span class="row-value">${safeAddress}</span></div>` : ''}
             </div>
-            <div style="background:#111827;padding:20px;text-align:center;color:#9ca3af;">
-                <p>© 2026 Bonü - Todos los derechos reservados</p>
+            
+            <!-- PRODUCTOS -->
+            <div class="section">
+                <div class="section-title">📦 Productos</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Producto</th>
+                            <th style="text-align:center;">Cant.</th>
+                            <th style="text-align:right;">Importe</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${itemsHtml}
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- RESUMEN DE PAGO -->
+            <div class="section">
+                <div class="section-title">💰 Resumen de Pago</div>
+                <div class="row"><span class="row-label">Subtotal:</span><span class="row-value">${formatCurrency(subtotal)}</span></div>
+                ${envio > 0 ? `<div class="row"><span class="row-label">Envío:</span><span class="row-value">${formatCurrency(envio)}</span></div>` : `<div class="row"><span class="row-label">Envío:</span><span class="row-value" style="color:#10b981;">Gratis</span></div>`}
+                ${iva > 0 ? `<div class="row"><span class="row-label">IVA (16%):</span><span class="row-value">${formatCurrency(iva)}</span></div>` : ''}
+                ${descuento > 0 ? `<div class="row"><span class="row-label">Descuento:</span><span class="row-value" style="color:#ef4444;">-${formatCurrency(descuento)}</span></div>` : ''}
+                ${cashbackUsado > 0 ? `<div class="row"><span class="row-label">Cashback usado:</span><span class="row-value" style="color:#3b82f6;">-${formatCurrency(cashbackUsado)}</span></div>` : ''}
+                ${safeCupon ? `<div class="row"><span class="row-label">Cupón aplicado:</span><span class="row-value" style="color:#8b5cf6;">${safeCupon}</span></div>` : ''}
+                <div class="row total-row">
+                    <span class="row-label" style="font-weight:700;">TOTAL:</span>
+                    <span class="row-value">${formatCurrency(total)}</span>
+                </div>
+            </div>
+            
+            <!-- DATOS DE FACTURACIÓN (si se solicitaron) -->
+            ${requireInvoice && (safeRfc || safeRazonSocial) ? `
+            <div class="section">
+                <div class="section-title">📄 Datos de Facturación</div>
+                ${safeRfc ? `<div class="row"><span class="row-label">RFC:</span><span class="row-value">${safeRfc}</span></div>` : ''}
+                ${safeRazonSocial ? `<div class="row"><span class="row-label">Razón Social:</span><span class="row-value">${safeRazonSocial}</span></div>` : ''}
+                ${safeRegimenFiscal ? `<div class="row"><span class="row-label">Régimen Fiscal:</span><span class="row-value">${safeRegimenFiscal}</span></div>` : ''}
+                ${safeUsoCFDI ? `<div class="row"><span class="row-label">Uso CFDI:</span><span class="row-value">${safeUsoCFDI}</span></div>` : ''}
+            </div>
+            ` : ''}
+            
+            <!-- AVISO LEGAL -->
+            <div class="legal">
+                <strong>⚠️ IMPORTANTE:</strong> Este documento es una <strong>NOTA DE COMPRA</strong> y <strong>NO tiene validez fiscal</strong>.<br>
+                Para efectos fiscales, este comprobante no es un CFDI. Si requieres factura con validez fiscal, por favor contáctanos.
+            </div>
+            
+            <!-- SOLICITAR FACTURA -->
+            <div style="background:#f0fdf4;border-radius:8px;padding:14px 16px;margin:16px 0;border:1px solid #bbf7d0;">
+                <p style="font-size:14px;color:#166534;font-weight:500;margin-bottom:4px;">📧 ¿Necesitas factura con validez fiscal?</p>
+                <p style="font-size:13px;color:#4a4a4a;">Escríbenos a <strong>bonu.marketplace@gmail.com</strong> o llama al <strong>322 270 0732</strong> y te enviaremos tu factura CFDI.</p>
+            </div>
+            
+            <!-- AGRADECIMIENTO -->
+            <div style="text-align:center;padding:8px 0 4px 0;border-top:1px solid #f3f4f6;margin-top:8px;">
+                <p style="font-size:16px;font-weight:600;color:#1f2937;">¡Gracias por confiar en Bonü! ❤️</p>
+                <p style="font-size:13px;color:#6b7280;">Tu compra está en proceso. Recibirás actualizaciones por correo.</p>
             </div>
         </div>
-    </body></html>`;
+        
+        <!-- FOOTER -->
+        <div class="footer">
+            <div class="company">⭐ Bonü Marketplace</div>
+            <div>2da de Iztacihuatl #20, Col. El Popo, Atlixco, Puebla</div>
+            <div class="contact">
+                📧 bonu.marketplace@gmail.com &nbsp;|&nbsp; 📞 322 270 0732 &nbsp;|&nbsp; RFC: CAGJ791031159
+            </div>
+            <div style="margin-top:8px;font-size:11px;color:#6b7280;">
+                © 2007-${new Date().getFullYear()} Bonü - Todos los derechos reservados
+                <br>
+                <a href="https://bonü.com" target="_blank">https://bonü.com</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`;
+    
+    const subject = `📄 Nota de Compra #${orderId} - Bonü Marketplace`;
     
     try {
         await Promise.race([
             emailTransporter.sendMail({
-                from: `"Bonü" <${process.env.EMAIL_USER}>`,
+                from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
                 to: customerEmail,
-                subject: `✅ Confirmación #${orderId}`,
-                html
+                subject: subject,
+                html: html
             }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 15000))
         ]);
-        console.log(`📧 Email enviado a ${customerEmail}`);
+        console.log(`📧 Nota de Compra enviada a ${customerEmail} - #${orderId}`);
         return true;
     } catch (error) {
-        console.error('❌ Error email:', error.message);
+        console.error('❌ Error enviando nota de compra:', error.message);
         return false;
     }
 }
@@ -168,7 +365,6 @@ async function verificarAdmin(req, res, next) {
     try {
         const decoded = await admin.auth().verifyIdToken(idToken);
         
-        // Verificar si es admin por Custom Claims o por colección admins
         let esAdmin = decoded.admin === true;
         if (!esAdmin && firestore) {
             const adminDoc = await firestore.collection('admins').doc(decoded.uid).get();
@@ -188,7 +384,6 @@ async function verificarAdmin(req, res, next) {
     }
 }
 
-// Middleware opcional de autenticación (para clientes logueados)
 async function verificarAuthOpcional(req, res, next) {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
@@ -219,7 +414,7 @@ const SUNSKY_API_URL = process.env.SUNSKY_API_URL || 'https://api.sunsky-online.
 const SUNSKY_API_KEY = process.env.SUNSKY_API_KEY;
 const SUNSKY_API_SECRET = process.env.SUNSKY_API_SECRET;
 
-/* ========== CORS (CORREGIDO - Bloquea orígenes no permitidos en producción) ========== */
+/* ========== CORS ========== */
 const allowedOrigins = [
     'http://localhost:5500', 
     'http://localhost:3000',
@@ -233,20 +428,14 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: (origin, callback) => {
-        // Permitir requests sin origin (Postman, mobile apps, server-to-server)
         if (!origin) return callback(null, true);
-        
         if (allowedOrigins.includes(origin)) {
             return callback(null, true);
         }
-        
-        // En producción, bloquear orígenes no permitidos
         if (NODE_ENV === 'production') {
             console.warn(`🚫 CORS bloqueado en producción: ${origin}`);
             return callback(new Error('Origen no permitido por CORS'));
         }
-        
-        // En desarrollo, permitir todo
         console.log(`⚠️ CORS permitido en desarrollo: ${origin}`);
         return callback(null, true);
     },
@@ -255,7 +444,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'CJ-Access-Token']
 }));
 
-// Webhooks necesitan body raw para verificar firmas
+// Webhooks
 app.use('/api/webhook/stripe', express.raw({ type: 'application/json' }));
 app.use('/api/webhook/mercadopago', express.raw({ type: 'application/json' }));
 app.use('/api/webhook/bonupay', express.raw({ type: 'application/json' }));
@@ -298,7 +487,6 @@ if (STRIPE_SECRET_KEY) {
     console.log('✅ Stripe configurado'); 
 }
 
-// ✅ CORREGIDO: Ya NO acepta amount del cliente. Usa el total del token validado.
 app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) => {
     if (!stripe) return res.status(500).json({ success: false, error: 'Stripe no configurado' });
     const { checkoutToken, customerEmail } = req.body;
@@ -308,7 +496,6 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
     }
     
     try {
-        // Verificar token
         const tokenDoc = await firestore.collection('checkoutTokens').doc(checkoutToken).get();
         if (!tokenDoc.exists) {
             return res.status(400).json({ success: false, error: 'Token inválido' });
@@ -316,12 +503,10 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
         
         const tokenData = tokenDoc.data();
         
-        // Verificar expiración
         if (tokenData.exp < Date.now()) {
             return res.status(400).json({ success: false, error: 'Token expirado' });
         }
         
-        // ✅ USAR EL TOTAL DEL TOKEN (calculado en servidor), NO del cliente
         const amount = tokenData.total;
         
         if (!amount || amount <= 0) {
@@ -329,7 +514,7 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
         }
         
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(amount * 100), // Stripe usa centavos
+            amount: Math.round(amount * 100),
             currency: 'mxn',
             metadata: { checkoutToken },
             receipt_email: customerEmail || tokenData.customerEmail,
@@ -353,9 +538,7 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
 /* ========== MERCADO PAGO ========== */
 const MERCADO_PAGO_API_URL = 'https://api.mercadopago.com/v1';
 
-// ============================================================
-// CHECKOUT API - MercadoPago (Pago integrado con tarjeta - sin redirigir)
-// ============================================================
+// CHECKOUT API - MercadoPago
 app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req, res) => {
     if (!MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'Mercado Pago no configurado' });
@@ -368,7 +551,6 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
     }
     
     try {
-        // Verificar token de checkout
         const tokenDoc = await firestore.collection('checkoutTokens').doc(checkoutToken).get();
         if (!tokenDoc.exists || tokenDoc.data().exp < Date.now()) {
             return res.status(400).json({ success: false, error: 'Token inválido o expirado' });
@@ -377,7 +559,6 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
         const tokenData = tokenDoc.data();
         const total = tokenData.total;
         
-        // Crear el pago directamente en Mercado Pago (Checkout API)
         const paymentData = {
             transaction_amount: parseFloat(total.toFixed(2)),
             token: cardToken,
@@ -414,7 +595,6 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
         console.log('📥 Respuesta MP (Checkout API - MercadoPago):', JSON.stringify(data, null, 2));
         
         if (data.id && data.status === 'approved') {
-            // Pago aprobado inmediatamente
             const result = await finalizarOrden(checkoutToken, 'MercadoPago', data.id, data.payer?.email);
             res.json({
                 success: true,
@@ -424,7 +604,6 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
                 paymentMethod: data.payment_method_id
             });
         } else if (data.id && (data.status === 'in_process' || data.status === 'pending')) {
-            // Pago en proceso - esperar webhook
             res.json({
                 success: true,
                 paymentId: data.id,
@@ -446,9 +625,7 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
     }
 });
 
-// ============================================================
-// CHECKOUT API - BonuPay (Pago integrado con tarjeta - sin redirigir)
-// ============================================================
+// CHECKOUT API - BonuPay
 app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res) => {
     if (!BONUPAY_ACCESS_TOKEN && !MERCADO_PAGO_ACCESS_TOKEN) {
         return res.status(500).json({ success: false, error: 'BonuPay no configurado' });
@@ -462,7 +639,6 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
     }
     
     try {
-        // Verificar token de checkout
         const tokenDoc = await firestore.collection('checkoutTokens').doc(checkoutToken).get();
         if (!tokenDoc.exists || tokenDoc.data().exp < Date.now()) {
             return res.status(400).json({ success: false, error: 'Token inválido o expirado' });
@@ -471,7 +647,6 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
         const tokenData = tokenDoc.data();
         const total = tokenData.total;
         
-        // Crear el pago directamente en Mercado Pago (Checkout API)
         const paymentData = {
             transaction_amount: parseFloat(total.toFixed(2)),
             token: cardToken,
@@ -508,7 +683,6 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
         console.log('📥 Respuesta MP (Checkout API - BonuPay):', JSON.stringify(data, null, 2));
         
         if (data.id && data.status === 'approved') {
-            // Pago aprobado inmediatamente
             const result = await finalizarOrden(checkoutToken, 'BonuPay', data.id, data.payer?.email);
             res.json({
                 success: true,
@@ -518,7 +692,6 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
                 paymentMethod: data.payment_method_id
             });
         } else if (data.id && (data.status === 'in_process' || data.status === 'pending')) {
-            // Pago en proceso - esperar webhook
             res.json({
                 success: true,
                 paymentId: data.id,
@@ -540,7 +713,7 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
     }
 });
 
-// ✅ Endpoint para capturar MercadoPago (Checkout Pro - se mantiene por compatibilidad)
+// Captura MercadoPago (compatibilidad)
 app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) => {
     const { paymentId, checkoutToken } = req.body;
     
@@ -553,14 +726,12 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
     }
     
     try {
-        // ✅ DOBLE VERIFICACIÓN: Consultar el pago directamente a la API de MP
         const paymentResponse = await fetch(`${MERCADO_PAGO_API_URL}/payments/${paymentId}`, {
             headers: { 'Authorization': `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}` }
         });
         
         const payment = await paymentResponse.json();
         
-        // Verificar que el pago esté aprobado
         if (payment.status !== 'approved') {
             console.warn(`⚠️ Pago MP no aprobado: ${paymentId} - Status: ${payment.status}`);
             return res.status(400).json({ 
@@ -569,13 +740,11 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
             });
         }
         
-        // Verificar que el external_reference coincida con el checkoutToken
         if (payment.external_reference !== checkoutToken) {
             console.error(`🚫 MP external_reference no coincide: ${payment.external_reference} vs ${checkoutToken}`);
             return res.status(400).json({ success: false, error: 'Referencia de pago no coincide' });
         }
         
-        // Verificar que el monto coincida con el token
         const tokenDoc = await firestore.collection('checkoutTokens').doc(checkoutToken).get();
         if (!tokenDoc.exists) {
             return res.status(400).json({ success: false, error: 'Token no encontrado' });
@@ -587,7 +756,6 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
             return res.status(400).json({ success: false, error: 'Monto no coincide' });
         }
         
-        // ✅ Todo correcto: crear la orden
         const result = await finalizarOrden(checkoutToken, 'MercadoPago', paymentId, payment.payer?.email);
         
         console.log(`✅ Orden creada desde MP capture: ${result.orderId}`);
@@ -603,7 +771,7 @@ app.post('/api/payments/mercadopago/capture', paymentLimiter, async (req, res) =
     }
 });
 
-// ✅ Endpoint para capturar BonuPay (Checkout Pro - se mantiene por compatibilidad)
+// Captura BonuPay (compatibilidad)
 app.post('/api/payments/bonupay/capture', paymentLimiter, async (req, res) => {
     const { paymentId, checkoutToken } = req.body;
     
@@ -617,7 +785,6 @@ app.post('/api/payments/bonupay/capture', paymentLimiter, async (req, res) => {
     }
     
     try {
-        // ✅ DOBLE VERIFICACIÓN
         const paymentResponse = await fetch(`${MERCADO_PAGO_API_URL}/payments/${paymentId}`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
@@ -696,7 +863,6 @@ app.post('/api/payments/paypal/create-order', paymentLimiter, async (req, res) =
         const total = tokenData.total;
         const accessToken = await getPayPalAccessToken();
         
-        // ✅ PayPal v2 - usar estructura correcta
         const orderData = {
             intent: 'CAPTURE',
             purchase_units: [{
@@ -715,8 +881,6 @@ app.post('/api/payments/paypal/create-order', paymentLimiter, async (req, res) =
                     }
                 }))
             }],
-            // ✅ application_context está deprecado pero aún funciona
-            // Para PayPal v3 usar payment_source
             application_context: {
                 return_url: returnUrl,
                 cancel_url: cancelUrl,
@@ -759,7 +923,6 @@ app.post('/api/payments/paypal/create-order', paymentLimiter, async (req, res) =
     }
 });
 
-// ✅ NUEVO Y CRÍTICO: Endpoint para capturar PayPal de forma segura
 app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
     const { orderID, checkoutToken } = req.body;
     
@@ -773,7 +936,6 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
     try {
         const accessToken = await getPayPalAccessToken();
         
-        // ✅ DOBLE VERIFICACIÓN: Capturar el pago en PayPal
         const captureRes = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders/${orderID}/capture`, {
             method: 'POST',
             headers: { 
@@ -784,7 +946,6 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
         
         const captureData = await captureRes.json();
         
-        // Verificar que la captura fue exitosa
         if (captureData.status !== 'COMPLETED') {
             console.warn(`⚠️ PayPal capture no completado: ${orderID} - Status: ${captureData.status}`);
             return res.status(400).json({ 
@@ -794,7 +955,6 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
             });
         }
         
-        // Verificar que el custom_id o reference_id coincida con el checkoutToken
         const purchaseUnit = captureData.purchase_units?.[0];
         const tokenFromPayPal = purchaseUnit?.custom_id || purchaseUnit?.reference_id;
         
@@ -806,7 +966,6 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
             });
         }
         
-        // Verificar que el monto coincida
         const tokenDoc = await firestore.collection('checkoutTokens').doc(checkoutToken).get();
         if (!tokenDoc.exists) {
             return res.status(400).json({ success: false, error: 'Token no encontrado' });
@@ -820,7 +979,6 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Monto no coincide' });
         }
         
-        // ✅ Todo correcto: crear la orden
         const captureId = purchaseUnit?.payments?.captures?.[0]?.id || captureData.id;
         const payerEmail = captureData.payer?.email_address;
         
@@ -840,13 +998,28 @@ app.post('/api/payments/paypal/capture', paymentLimiter, async (req, res) => {
     }
 });
 
-/* ========== CHECKOUT SEGURO (CORREGIDO - No valida precios del cliente) ========== */
+/* ========== CHECKOUT SEGURO (CON DATOS FISCALES) ========== */
 app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
     }
     
-    const { cart, cuponCode, cashbackToUse, userId, customerEmail, customerName, shippingAddress } = req.body;
+    const { 
+        cart, 
+        cuponCode, 
+        cashbackToUse, 
+        userId, 
+        customerEmail, 
+        customerName, 
+        shippingAddress,
+        // Datos fiscales (nuevos)
+        rfc = '',
+        razonSocial = '',
+        regimenFiscal = '',
+        usoCFDI = '',
+        requireInvoice = false,
+        phone = ''
+    } = req.body;
     
     // Validaciones básicas
     if (!cart?.length) {
@@ -867,13 +1040,16 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     // Sanitizar inputs
     const safeCustomerName = sanitize(customerName).substring(0, 200);
     const safeCustomerEmail = customerEmail.toLowerCase().trim().substring(0, 200);
+    const safeRfc = sanitize(rfc).substring(0, 20);
+    const safeRazonSocial = sanitize(razonSocial).substring(0, 200);
+    const safeRegimenFiscal = sanitize(regimenFiscal).substring(0, 100);
+    const safeUsoCFDI = sanitize(usoCFDI).substring(0, 50);
+    const safePhone = sanitize(phone).substring(0, 20);
     
     let subtotal = 0;
     const validatedItems = [];
     
-    // ✅ CORREGIDO: NO validar precios del cliente. Calcular todo desde Firestore.
     for (const item of cart) {
-        // Validar que el item tenga id y cantidad
         if (!item.id) {
             return res.status(400).json({ success: false, error: 'Producto sin ID' });
         }
@@ -886,7 +1062,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             });
         }
         
-        // Obtener producto desde Firestore
         const prodRef = firestore.collection('productos').doc(item.id);
         const prodDoc = await prodRef.get();
         
@@ -899,7 +1074,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         
         const prod = prodDoc.data();
         
-        // Verificar stock
         if ((prod.stock || 0) < cantidad) {
             return res.status(409).json({ 
                 success: false, 
@@ -907,7 +1081,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             });
         }
         
-        // ✅ USAR PRECIO DE FIRESTORE (no del cliente)
         const precioReal = parseFloat(prod.precioFinal) || 0;
         
         if (precioReal <= 0) {
@@ -917,7 +1090,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             });
         }
         
-        // ✅ LOG DE SEGURIDAD: Si el cliente envió un precio diferente, registrarlo
         if (item.precioFinal !== undefined && Math.abs(precioReal - item.precioFinal) > 0.01) {
             console.warn(`⚠️ Intento de manipulación de precio detectado:`);
             console.warn(`   Producto: ${prod.nombre}`);
@@ -985,7 +1157,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         }
     }
     
-    // Calcular totales (CORREGIDO: envío = 0 si no hay costos definidos)
     const envio = subtotal >= 999 ? 0 : validatedItems.reduce((s, i) => s + (i.costoEnvio || 0), 0);
     const iva = (subtotal - descuento) * 0.16;
     const total = Math.round((subtotal - descuento - cashbackUsar + envio + iva) * 100) / 100;
@@ -994,7 +1165,6 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         return res.status(400).json({ success: false, error: 'Total inválido' });
     }
     
-    // Crear token firmado (expira en 10 min)
     const token = crypto.randomBytes(32).toString('hex');
     const payload = {
         token,
@@ -1011,7 +1181,14 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         envio,
         iva,
         total,
-        exp: Date.now() + 10 * 60 * 1000, // 10 minutos
+        // Datos fiscales
+        rfc: safeRfc,
+        razonSocial: safeRazonSocial,
+        regimenFiscal: safeRegimenFiscal,
+        usoCFDI: safeUsoCFDI,
+        requireInvoice: requireInvoice,
+        phone: safePhone,
+        exp: Date.now() + 10 * 60 * 1000,
         createdAt: new Date().toISOString(),
         ip: req.ip
     };
@@ -1028,7 +1205,7 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     });
 });
 
-/* ========== FUNCIÓN PARA CREAR ORDEN DESPUÉS DEL PAGO (idempotente) ========== */
+/* ========== FUNCIÓN PARA CREAR ORDEN DESPUÉS DEL PAGO (con datos fiscales) ========== */
 async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmail = null) {
     if (!firestore) throw new Error('Firestore no disponible');
     
@@ -1039,7 +1216,6 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
     
     if (data.exp < Date.now()) throw new Error('Token expirado');
     
-    // Evitar doble procesamiento (idempotencia)
     const processedRef = firestore.collection('processedPayments').doc(paymentId);
     const processedDoc = await processedRef.get();
     
@@ -1067,16 +1243,24 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
         fecha: new Date().toISOString(),
         cuponAplicado: data.cuponAplicado?.codigo || null,
         cashbackUsado: data.cashbackUsar || 0,
-        paymentId: paymentId
+        paymentId: paymentId,
+        // Datos fiscales
+        rfc: data.rfc || '',
+        razonSocial: data.razonSocial || '',
+        regimenFiscal: data.regimenFiscal || '',
+        usoCFDI: data.usoCFDI || '',
+        requireInvoice: data.requireInvoice || false,
+        phone: data.phone || '',
+        subtotal: data.subtotal || 0,
+        envio: data.envio || 0,
+        iva: data.iva || 0,
+        descuento: data.descuento || 0
     };
     
-    // Crear la orden
     await firestore.collection('pedidos').doc(orderId).set(orderData);
     
-    // Actualizar stock, cashback y cupón en batch
     const batch = firestore.batch();
     
-    // Actualizar stock
     for (const item of data.validatedItems) {
         const prodRef = firestore.collection('productos').doc(item.id);
         batch.update(prodRef, { 
@@ -1084,10 +1268,9 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
         });
     }
     
-    // Actualizar cashback del usuario
     if (data.userId) {
         const userRef = firestore.collection('clientes').doc(data.userId);
-        const cashbackGanado = data.total * 0.05; // 5% de cashback
+        const cashbackGanado = data.total * 0.05;
         
         batch.update(userRef, {
             cashbackBalance: admin.firestore.FieldValue.increment(
@@ -1102,7 +1285,6 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
         });
     }
     
-    // Actualizar usos del cupón
     if (data.cuponAplicado?.id) {
         const cuponRef = firestore.collection('cupones').doc(data.cuponAplicado.id);
         batch.update(cuponRef, { 
@@ -1110,7 +1292,6 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
         });
     }
     
-    // Registrar transacción
     const txRef = firestore.collection('transacciones').doc();
     batch.set(txRef, {
         ordenId: orderId,
@@ -1123,17 +1304,15 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
     
     await batch.commit();
     
-    // Marcar pago como procesado
     await processedRef.set({ 
         orderId, 
         paymentId, 
         processedAt: new Date().toISOString() 
     });
     
-    // Eliminar token (ya no sirve)
     await tokenDoc.ref.delete();
     
-    // Enviar email de confirmación
+    // Enviar NOTA DE COMPRA profesional
     if (data.customerEmail) {
         sendConfirmationEmail({
             orderId,
@@ -1143,7 +1322,21 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
             items: data.validatedItems,
             shippingAddress: data.shippingAddress,
             paymentMethod,
-            date: orderData.fecha
+            date: orderData.fecha,
+            // Datos adicionales para la nota
+            subtotal: data.subtotal || 0,
+            envio: data.envio || 0,
+            iva: data.iva || 0,
+            descuento: data.descuento || 0,
+            cashbackUsado: data.cashbackUsar || 0,
+            rfc: data.rfc || '',
+            razonSocial: data.razonSocial || '',
+            regimenFiscal: data.regimenFiscal || '',
+            usoCFDI: data.usoCFDI || '',
+            requireInvoice: data.requireInvoice || false,
+            phone: data.phone || '',
+            estado: 'pagado',
+            cuponAplicado: data.cuponAplicado?.codigo || ''
         }).catch(err => console.error('Error email:', err.message));
     }
     
@@ -1154,7 +1347,7 @@ async function finalizarOrden(checkoutToken, paymentMethod, paymentId, payerEmai
 
 /* ========== WEBHOOKS ========== */
 
-// Stripe Webhook (ya verificado con firma)
+// Stripe Webhook
 app.post('/api/webhook/stripe', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.sendStatus(200);
     
@@ -1191,16 +1384,15 @@ app.post('/api/webhook/stripe', async (req, res) => {
     res.sendStatus(200);
 });
 
-// MercadoPago Webhook (con doble verificación)
+// MercadoPago Webhook
 app.post('/api/webhook/mercadopago', async (req, res) => {
-    res.sendStatus(200); // Responder inmediatamente para que MP no reintente
+    res.sendStatus(200);
     
     try {
         const body = JSON.parse(req.body.toString());
         const { type, data } = body;
         
         if (type === 'payment' && data?.id) {
-            // ✅ DOBLE VERIFICACIÓN: Consultar el pago a la API de MP
             const paymentResponse = await fetch(`${MERCADO_PAGO_API_URL}/payments/${data.id}`, {
                 headers: { 'Authorization': `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}` }
             });
@@ -1252,7 +1444,7 @@ app.post('/api/webhook/bonupay', async (req, res) => {
     }
 });
 
-// PayPal Webhook (con doble verificación)
+// PayPal Webhook
 app.post('/api/webhook/paypal', async (req, res) => {
     res.sendStatus(200);
     
@@ -1264,7 +1456,6 @@ app.post('/api/webhook/paypal', async (req, res) => {
             const checkoutToken = capture.custom_id;
             
             if (checkoutToken) {
-                // ✅ DOBLE VERIFICACIÓN: Consultar la orden a la API de PayPal
                 const accessToken = await getPayPalAccessToken();
                 const orderRes = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders/${capture.supplementary_data?.related_ids?.order_id || capture.id}`, {
                     headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -1286,7 +1477,7 @@ app.post('/api/webhook/paypal', async (req, res) => {
 /* ========== RUTAS PÚBLICAS ========== */
 app.get('/', (req, res) => res.json({ 
     success: true, 
-    message: 'Bonü Backend v7.0 - Producción (Checkout API)', 
+    message: 'Bonü Backend v7.1 - Producción (Nota de Compra Profesional)', 
     env: NODE_ENV,
     timestamp: new Date().toISOString()
 }));
@@ -1320,7 +1511,6 @@ app.get('/api/config', (req, res) => res.json({
     paypalMode: PAYPAL_MODE
 }));
 
-// ✅ NUEVO: Verificar stock en tiempo real
 app.post('/api/verify-stock', async (req, res) => {
     const { items } = req.body;
     
@@ -2025,7 +2215,7 @@ app.delete('/api/admin/productos/:id', verificarAdmin, async (req, res) => {
     }
 });
 
-// ✅ NUEVO: Admin cupones
+// ✅ Admin cupones
 app.get('/api/admin/cupones', verificarAdmin, async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -2085,7 +2275,7 @@ app.delete('/api/admin/cupones/:id', verificarAdmin, async (req, res) => {
     }
 });
 
-// ✅ NUEVO: Admin solicitudes de retiro
+// ✅ Admin solicitudes de retiro
 app.get('/api/admin/withdraw-requests', verificarAdmin, async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -2184,7 +2374,6 @@ app.post('/api/admin/set-role', verificarAdmin, async (req, res) => {
         
         await admin.auth().setCustomUserClaims(user.uid, { admin: true });
         
-        // También guardar en la colección admins para las reglas de Firestore
         if (firestore) {
             await firestore.collection('admins').doc(user.uid).set({
                 email: user.email,
@@ -2250,7 +2439,7 @@ app.use((err, req, res, next) => {
 /* ========== ARRANQUE ========== */
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
-    console.log('✅ Bonü Backend v7.0 - PRODUCCIÓN (Checkout API para BonuPay y MercadoPago)');
+    console.log('✅ Bonü Backend v7.1 - PRODUCCIÓN (Checkout API + Nota de Compra Profesional)');
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🌍 Entorno: ${NODE_ENV}`);
     console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
@@ -2262,6 +2451,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`📦 CJ: ${CJ_API_KEY ? '✅' : '❌'}`);
     console.log(`📺 TVCmall: ${TVCMALL_API_KEY ? '✅' : '❌'}`);
     console.log(`☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '❌'}`);
+    console.log('==================================================');
+    console.log('📄 NOTA DE COMPRA PROFESIONAL ACTIVADA');
+    console.log(`🏢 Bonü Marketplace - RFC: CAGJ791031159`);
+    console.log(`📧 bonu.marketplace@gmail.com | 📞 322 270 0732`);
     console.log('==================================================');
 });
 
