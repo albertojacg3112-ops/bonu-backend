@@ -80,6 +80,43 @@ function sanitize(str) {
         .replace(/'/g, '&#039;');
 }
 
+// ===== OPTIMIZACIÓN DE IMÁGENES CON CLOUDINARY =====
+function getOptimizedImageUrl(imageUrl, width = 500, height = 500, crop = 'fill') {
+    if (!imageUrl) return null;
+    
+    // Si Cloudinary está configurado y la imagen es de ImgBB, usar Cloudinary como proxy
+    if (CLOUDINARY_CLOUD_NAME && imageUrl.includes('i.ibb.co')) {
+        return `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/w_${width},h_${height},c_${crop},f_auto,q_auto/${encodeURIComponent(imageUrl)}`;
+    }
+    
+    // Si la imagen es de Unsplash, agregar parámetros
+    if (imageUrl.includes('unsplash.com')) {
+        const separator = imageUrl.includes('?') ? '&' : '?';
+        return `${imageUrl}${separator}w=${width}&h=${height}&fit=crop&crop=center&auto=format`;
+    }
+    
+    // Si Cloudinary está configurado, usarlo para cualquier imagen
+    if (CLOUDINARY_CLOUD_NAME) {
+        return `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/w_${width},h_${height},c_${crop},f_auto,q_auto/${encodeURIComponent(imageUrl)}`;
+    }
+    
+    // Fallback: devolver la imagen original
+    return imageUrl;
+}
+
+function getOptimizedProductImages(product) {
+    if (!product || !product.imagenes || !Array.isArray(product.imagenes)) {
+        return product;
+    }
+    
+    return {
+        ...product,
+        imagenes: product.imagenes.map(img => getOptimizedImageUrl(img)),
+        thumbnail: product.imagenes[0] ? getOptimizedImageUrl(product.imagenes[0], 200, 200) : null,
+        medium: product.imagenes[0] ? getOptimizedImageUrl(product.imagenes[0], 400, 400) : null,
+        large: product.imagenes[0] ? getOptimizedImageUrl(product.imagenes[0], 800, 800) : null
+    };
+}
 /* ========== NOTA DE COMPRA PROFESIONAL ========== */
 async function sendConfirmationEmail(orderData) {
     if (!emailConfigurado || !emailTransporter) return false;
@@ -390,6 +427,22 @@ const SUNSKY_API_URL = process.env.SUNSKY_API_URL || 'https://api.sunsky-online.
 const SUNSKY_API_KEY = process.env.SUNSKY_API_KEY;
 const SUNSKY_API_SECRET = process.env.SUNSKY_API_SECRET;
 
+// ===== CLOUDINARY (NUEVO) =====
+const cloudinary = require('cloudinary').v2;
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY;
+const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
+
+if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
+    cloudinary.config({
+        cloud_name: CLOUDINARY_CLOUD_NAME,
+        api_key: CLOUDINARY_API_KEY,
+        api_secret: CLOUDINARY_API_SECRET
+    });
+    console.log('✅ Cloudinary configurado');
+} else {
+    console.log('⚠️ Cloudinary no configurado (opcional)');
+}
 /* ========== CORS ========== */
 const allowedOrigins = [
     'http://localhost:5500', 
@@ -1525,7 +1578,12 @@ app.get('/api/products', async (req, res) => {
         const snapshot = await query.orderBy('fechaAgregado', 'desc').limit(parseInt(limit)).get();
         let productos = [];
         
-        snapshot.forEach(doc => productos.push({ id: doc.id, ...doc.data() }));
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            // Optimizar imágenes con Cloudinary
+            const optimizedData = getOptimizedProductImages(data);
+            productos.push({ id: doc.id, ...optimizedData });
+        });
         
         if (search?.trim()) {
             const s = search.toLowerCase();
@@ -1542,7 +1600,6 @@ app.get('/api/products', async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 });
-
 app.get('/api/products/:id', async (req, res) => {
     if (!firestore) {
         return res.status(500).json({ success: false, error: 'Firestore no disponible' });
@@ -1555,9 +1612,12 @@ app.get('/api/products/:id', async (req, res) => {
             return res.status(404).json({ success: false, error: 'Producto no encontrado' });
         }
         
+        const data = productDoc.data();
+        const optimizedData = getOptimizedProductImages(data);
+        
         res.json({ 
             success: true, 
-            producto: { id: productDoc.id, ...productDoc.data() } 
+            producto: { id: productDoc.id, ...optimizedData } 
         });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
