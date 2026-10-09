@@ -594,10 +594,7 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
             payment_method_id: paymentMethodId || 'visa',
             payer: {
                 email: payer?.email || tokenData.customerEmail || 'cliente@bonu.com',
-                identification: {
-                    type: 'DNI',
-                    number: '12345678'
-                }
+                
             },
             external_reference: checkoutToken,
             metadata: {
@@ -613,7 +610,7 @@ app.post('/api/payments/mercadopago/create-payment', paymentLimiter, async (req,
             headers: {
                 'Authorization': `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}`,
                 'Content-Type': 'application/json',
-                'X-Idempotency-Key': `${checkoutToken}-${Date.now()}`
+                'X-Idempotency-Key': checkoutToken
             },
             body: JSON.stringify(paymentData)
         });
@@ -681,10 +678,7 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
             payment_method_id: paymentMethodId || 'visa',
             payer: {
                 email: payer?.email || tokenData.customerEmail || 'cliente@bonu.com',
-                identification: {
-                    type: 'DNI',
-                    number: '12345678'
-                }
+                
             },
             external_reference: checkoutToken,
             metadata: {
@@ -700,7 +694,7 @@ app.post('/api/payments/bonupay/create-payment', paymentLimiter, async (req, res
             headers: {
                 'Authorization': `Bearer ${accessToken}`,
                 'Content-Type': 'application/json',
-                'X-Idempotency-Key': `${checkoutToken}-${Date.now()}`
+                'X-Idempotency-Key': checkoutToken
             },
             body: JSON.stringify(paymentData)
         });
@@ -1355,11 +1349,16 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
         }).catch(err => console.error('Error email:', err.message));
     }
     
+        try {
+        emitNewOrder({ id: orderId, usuario: data.customerName || 'Cliente', total: data.total });
+    } catch (err) {
+        console.error('emitNewOrder fallo:', err.message);
+    }
+    
     console.log(`✅ Orden creada: ${orderId} - ${paymentMethod} - $${data.total} MXN`);
     
     return { orderId };
 };
-
 /* ========== WEBHOOKS ========== */
 app.post('/api/webhook/stripe', async (req, res) => {
     if (!stripe || !STRIPE_WEBHOOK_SECRET) return res.sendStatus(200);
@@ -1387,8 +1386,9 @@ app.post('/api/webhook/stripe', async (req, res) => {
             await finalizarOrden(checkoutToken, 'Stripe', intent.id, intent.receipt_email);
             console.log(`✅ Orden creada desde Stripe webhook: ${checkoutToken}`);
         } catch (error) {
-            console.error('❌ Error procesando webhook Stripe:', error.message);
-        }
+    console.error('❌ Error procesando webhook Stripe:', error.message);
+    return res.status(500).send();
+}
     } else if (event.type === 'payment_intent.payment_failed') {
         const intent = event.data.object;
         console.warn(`⚠️ Stripe payment failed: ${intent.id}`);
@@ -1661,7 +1661,7 @@ async function getCJToken() {
     return cjTokenPromise;
 }
 
-app.get('/api/cj/product/:sku', async (req, res) => {
+app.get('/api/cj/product/:sku', verificarAdmin, async (req, res) => {
     const { sku } = req.params;
     
     if (!CJ_API_KEY) {
@@ -1738,7 +1738,7 @@ app.post('/api/cj/import', verificarAdmin, async (req, res) => {
             descuento: 13,
             stock: producto.inventory || 100,
             tipo: tipo || 'Ofertas',
-            rating: 4.5,
+            rating: 0,
             imagenes: producto.productImage ? [producto.productImage] : ['https://picsum.photos/500/500'],
             proveedor: 'CJ Dropshipping',
             fechaAgregado: new Date().toISOString()
@@ -1760,7 +1760,7 @@ app.post('/api/cj/import', verificarAdmin, async (req, res) => {
     }
 });
 
-app.get('/api/tvcmall/product/:sku', async (req, res) => {
+app.get('/api/tvcmall/product/:sku', verificarAdmin, async (req, res) => {
     const { sku } = req.params;
     
     if (!TVCMALL_API_KEY || !TVCMALL_API_SECRET) {
@@ -1861,9 +1861,9 @@ app.post('/api/tvcmall/import', verificarAdmin, async (req, res) => {
             precioFinal: parseFloat(precioVenta),
             precioOriginal: parseFloat(precioVenta) * 1.15,
             descuento: 13,
-            stock: product.stock || 100,
+            stock: product.stock || 0,
             tipo: tipo || 'Ofertas',
-            rating: 4.5,
+            rating: 0,
             imagenes: product.images || (product.image ? [product.image] : ['https://picsum.photos/500/500']),
             proveedor: 'TVCmall',
             fechaAgregado: new Date().toISOString()
@@ -1883,7 +1883,7 @@ app.post('/api/tvcmall/import', verificarAdmin, async (req, res) => {
     }
 });
 
-app.get('/api/sunsky/product/:sku', async (req, res) => {
+app.get('/api/sunsky/product/:sku', verificarAdmin, async (req, res) => {
     const { sku } = req.params;
     
     if (!SUNSKY_API_KEY || !SUNSKY_API_SECRET) {
@@ -1972,9 +1972,9 @@ app.post('/api/sunsky/import', verificarAdmin, async (req, res) => {
             precioFinal: parseFloat(precioVenta),
             precioOriginal: parseFloat(precioVenta) * 1.15,
             descuento: 13,
-            stock: product.stock || 100,
+            stock: product.stock || 0,
             tipo: tipo || 'Ofertas',
-            rating: 4.5,
+            rating: 0,
             imagenes: product.images || (product.image ? [product.image] : ['https://picsum.photos/500/500']),
             proveedor: 'SunSky',
             fechaAgregado: new Date().toISOString()
