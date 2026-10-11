@@ -3167,7 +3167,7 @@ app.get('/og/producto/:id', async (req, res) => {
 /* ========== ALIEXPRESS DROPSHIPPING (API REAL) ========== */
 const AE_KEY = process.env.ALIEXPRESS_APP_KEY || '';
 const AE_SECRET = process.env.ALIEXPRESS_APP_SECRET || '';
-const AE_TOKEN = process.env.ALIEXPRESS_ACCESS_TOKEN || '';
+let AE_TOKEN = process.env.ALIEXPRESS_ACCESS_TOKEN || '';
 const AE_API_URL = 'https://api-sg.aliexpress.com/sync';
 
 function aeFirmar(params) {
@@ -3182,7 +3182,7 @@ async function aeLlamar(metodo, paramsNegocio = {}) {
     const params = {
         method: metodo,
         app_key: AE_KEY,
-        session: AE_TOKEN,
+        session: await aeTokenFresco(),
         timestamp: Date.now(),
         format: 'json',
         v: '2.0',
@@ -3202,7 +3202,89 @@ function extraerIdAliexpress(texto) {
     const m = t.match(/item\/(\d+)\.html/) || t.match(/product\/(\d+)/);
     return m ? m[1] : t;
 }
+/* ========== TOKENS ALIEXPRESS: CANJE + AUTO-RENOVACIÓN ========== */
+const AE_REDIRECT_URI = process.env.ALIEXPRESS_REDIRECT_URI || 'https://xn--bon-joa.com/';
 
+async function aeLeerTokens() {
+    if (!firestore) return null;
+    try {
+        const d = await firestore.collection('config').doc('aliexpress_tokens').get();
+        return d.exists ? d.data() : null;
+    } catch (e) { return null; }
+}
+
+async function aeGuardarTokens(data) {
+    const registro = {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || '',
+        emitido: Date.now()
+    };
+    if (firestore) await firestore.collection('config').doc('aliexpress_tokens').set(registro, { merge: true });
+    AE_TOKEN = registro.access_token;
+    return registro;
+}
+
+async function aeTokenFresco() {
+    const t = await aeLeerTokens();
+    if (!t || !t.access_token) return AE_TOKEN;
+    const edadDias = (Date.now() - (t.emitido || 0)) / 86400000;
+    if (edadDias > 40 && t.refresh_token) {
+        try {
+            console.log('🔄 Renovando token AliExpress automáticamente...');
+            const body = new URLSearchParams({
+                grant_type: 'refresh_token',
+                client_id: AE_KEY,
+                client_secret: AE_SECRET,
+                refresh_token: t.refresh_token
+            });
+            const r = await fetch('https://api-sg.aliexpress.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+            const d = await r.json();
+            if (d.access_token) {
+                await aeGuardarTokens(d);
+                console.log('✅ Token AliExpress renovado');
+                return d.access_token;
+            }
+            console.warn('⚠️ Refresh AliExpress falló:', JSON.stringify(d).slice(0, 300));
+        } catch (e) { console.warn('⚠️ Error refresh:', e.message); }
+    }
+    return t.access_token;
+}
+
+app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res) => {
+    const { code } = req.body || {};
+    if (!code) return res.status(400).json({ success: false, error: 'Falta el code' });
+    if (!AE_KEY || !AE_SECRET) return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas' });
+    try {
+        const body = new URLSearchParams({
+            grant_type: 'authorization_code',
+            need_refresh_token: 'true',
+            client_id: AE_KEY,
+            client_secret: AE_SECRET,
+            redirect_uri: AE_REDIRECT_URI,
+            code
+        });
+        const r = await fetch('https://api-sg.aliexpress.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+        const d = await r.json();
+        if (!d.access_token) {
+            return res.status(400).json({ success: false, error: 'AliExpress rechazó el code: ' + (d.error_description || d.error || JSON.stringify(d).slice(0, 200)) });
+        }
+        await aeGuardarTokens(d);
+        res.json({ success: true, message: 'Token canjeado y guardado. Auto-renovación activa.' });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.get('/api/admin/aliexpress/token/estado', verificarAdmin, async (req, res) => {
+    const t = await aeLeerTokens();
+    res.json({
+        success: true,
+        hayTokenFirestore: !!(t && t.access_token),
+        diasDesde: t?.emitido ? Math.floor((Date.now() - t.emitido) / 86400000) : null,
+        autoRenovacion: !!(t && t.refresh_token),
+        autorizarUrl: 'https://api.aliexpress.com/oauth/authorize?response_type=code&client_id=' + AE_KEY + '&redirect_uri=' + encodeURIComponent(AE_REDIRECT_URI)
+    });
+});
 app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
     if (!AE_KEY || !AE_SECRET || !AE_TOKEN) {
         return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas en el servidor' });
