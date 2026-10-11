@@ -3219,7 +3219,15 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
             target_currency: 'MXN',
             target_language: 'es'
         });
-
+        console.log('🔍 RAW AliExpress:', JSON.stringify(data).slice(0, 1500));
+        if (data.error_response) {
+            const er = data.error_response;
+            return res.status(400).json({
+                success: false,
+                error: `AliExpress gateway: ${er.msg || 'error'} ${er.sub_msg || ''}`,
+                codigo: er.code
+            });
+        }
         const r = data?.aliexpress_ds_product_get_response || {};
         if (r.error_response) {
             return res.status(400).json({
