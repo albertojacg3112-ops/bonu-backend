@@ -3164,6 +3164,101 @@ app.get('/og/producto/:id', async (req, res) => {
         res.redirect('https://xn--bon-joa.com'); 
     }
 });
+/* ========== ALIEXPRESS DROPSHIPPING (API REAL) ========== */
+const AE_KEY = process.env.ALIEXPRESS_APP_KEY || '';
+const AE_SECRET = process.env.ALIEXPRESS_APP_SECRET || '';
+const AE_TOKEN = process.env.ALIEXPRESS_ACCESS_TOKEN || '';
+const AE_API_URL = 'https://api-sg.aliexpress.com/sync';
+
+function aeFirmar(params) {
+    const sorted = Object.keys(params).sort();
+    let base = AE_SECRET;
+    sorted.forEach(k => { base += k + params[k]; });
+    base += AE_SECRET;
+    return crypto.createHmac('sha256', AE_SECRET).update(base).digest('hex').toUpperCase();
+}
+
+async function aeLlamar(metodo, paramsNegocio = {}) {
+    const params = {
+        method: metodo,
+        app_key: AE_KEY,
+        session: AE_TOKEN,
+        timestamp: Date.now(),
+        format: 'json',
+        v: '2.0',
+        sign_method: 'sha256',
+        ...paramsNegocio
+    };
+    params.sign = aeFirmar(params);
+    const qs = new URLSearchParams(params).toString();
+    const resp = await fetch(`${AE_API_URL}?${qs}`, { method: 'POST' });
+    if (!resp.ok) throw new Error(`AliExpress HTTP ${resp.status}`);
+    return resp.json();
+}
+
+function extraerIdAliexpress(texto) {
+    const t = String(texto || '').trim();
+    if (/^\d+$/.test(t)) return t;
+    const m = t.match(/item\/(\d+)\.html/) || t.match(/product\/(\d+)/);
+    return m ? m[1] : t;
+}
+
+app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
+    if (!AE_KEY || !AE_SECRET || !AE_TOKEN) {
+        return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas en el servidor' });
+    }
+    const raw = req.query.id || '';
+    if (!raw) return res.status(400).json({ success: false, error: 'Falta id o URL del producto' });
+    const productId = extraerIdAliexpress(raw);
+    if (!productId) return res.status(400).json({ success: false, error: 'No pude extraer el ID del producto de: ' + raw });
+
+    try {
+        const data = await aeLlamar('aliexpress.ds.product.get', {
+            product_id: productId,
+            ship_to_country: 'MX',
+            target_currency: 'MXN',
+            target_language: 'es'
+        });
+
+        const r = data?.aliexpress_ds_product_get_response || {};
+        if (r.error_response) {
+            return res.status(400).json({
+                success: false,
+                error: `AliExpress: ${r.error_response.msg || 'error'} ${r.error_response.sub_msg || ''}`,
+                codigo: r.error_response.code
+            });
+        }
+        const result = r.result || {};
+        const item = result.item || result.awsitem_info?.item || result.data?.item || null;
+        if (!item) {
+            return res.status(400).json({
+                success: false,
+                error: `AliExpress no devolvió el producto (código ${result.error_code || '?'}). Diagnóstico abajo.`,
+                raw: JSON.stringify(data).slice(0, 2000)
+            });
+        }
+
+        let imagenes = [];
+        if (Array.isArray(item.image_urls)) imagenes = item.image_urls;
+        else if (typeof item.image_urls === 'string') imagenes = item.image_urls.split(';').filter(Boolean);
+
+        res.json({
+            success: true,
+            data: {
+                id: productId,
+                nombre: item.title || item.subject || '',
+                precio: parseFloat(item.target_sale_price || item.sale_price || item.offer_sale_price || 0) || 0,
+                moneda: item.target_sale_price_currency || 'MXN',
+                imagenes,
+                descripcion: item.detail || '',
+                stock: item.total_available_quantity || null
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error AliExpress:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 /* ========== WEBSOCKET ========== */
 const server = http.createServer(app);
@@ -3288,6 +3383,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`💳 BonuPay: ${BONUPAY_ACCESS_TOKEN ? '✅' : '⚠️ Usando MP'}`);
     console.log(`💳 PayPal: ${PAYPAL_CLIENT_ID ? '✅' : '❌'}`);
     console.log(`📦 CJ: ${CJ_API_KEY ? '✅' : '❌'}`);
+    console.log(`🌐 AliExpress: ${AE_KEY ? '✅' : '❌'}`);
     console.log(`📺 TVCmall: ${TVCMALL_API_KEY ? '✅' : '❌'}`);
     console.log(`☀️ SunSky: ${SUNSKY_API_KEY ? '✅' : '❌'}`);
     console.log('==================================================');
