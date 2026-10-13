@@ -3263,8 +3263,11 @@ app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res)
             redirect_uri: AE_REDIRECT_URI,
             code
         });
-        const r = await fetch('https://api-sg.aliexpress.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-        const d = await r.json();
+               const txt = await r.text();
+        console.log('🔍 RAW canje (HTTP ' + r.status + '):', txt.slice(0, 500));
+        if (!txt) throw new Error('AliExpress devolvió respuesta vacía (HTTP ' + r.status + ')');
+        let d;
+        try { d = JSON.parse(txt); } catch(e) { throw new Error('Respuesta no-JSON: ' + txt.slice(0, 200)); }
         if (!d.access_token) {
             return res.status(400).json({ success: false, error: 'AliExpress rechazó el code: ' + (d.error_description || d.error || JSON.stringify(d).slice(0, 200)) });
         }
