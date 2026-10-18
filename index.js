@@ -3263,7 +3263,12 @@ app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res)
             redirect_uri: AE_REDIRECT_URI,
             code
         });
-               const txt = await r.text();
+        const r = await fetch('https://api.aliexpress.com/oauth/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+        });
+        const txt = await r.text();
         console.log('🔍 RAW canje (HTTP ' + r.status + '):', txt.slice(0, 500));
         if (!txt) throw new Error('AliExpress devolvió respuesta vacía (HTTP ' + r.status + ')');
         let d;
@@ -3276,17 +3281,6 @@ app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res)
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
-});
-
-app.get('/api/admin/aliexpress/token/estado', verificarAdmin, async (req, res) => {
-    const t = await aeLeerTokens();
-    res.json({
-        success: true,
-        hayTokenFirestore: !!(t && t.access_token),
-        diasDesde: t?.emitido ? Math.floor((Date.now() - t.emitido) / 86400000) : null,
-        autoRenovacion: !!(t && t.refresh_token),
-        autorizarUrl: 'https://api.aliexpress.com/oauth/authorize?response_type=code&client_id=' + AE_KEY + '&redirect_uri=' + encodeURIComponent(AE_REDIRECT_URI)
-    });
 });
 app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
     if (!AE_KEY || !AE_SECRET || !AE_TOKEN) {
