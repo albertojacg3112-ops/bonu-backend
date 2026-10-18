@@ -3256,13 +3256,14 @@ app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res)
     if (!AE_KEY || !AE_SECRET) return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas' });
     try {
         const body = new URLSearchParams({
-            grant_type: 'authorization_code',
-            need_refresh_token: 'true',
-            client_id: AE_KEY,
-            client_secret: AE_SECRET,
-            redirect_uri: AE_REDIRECT_URI,
-            code
-        });
+    grant_type: 'authorization_code',
+    need_refresh_token: 'true',
+    client_id: AE_KEY,
+    client_secret: AE_SECRET,
+    redirect_uri: AE_REDIRECT_URI,
+    code,
+    sp: 'ae'
+});
         const r = await fetch('https://oauth.aliexpress.com/token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
