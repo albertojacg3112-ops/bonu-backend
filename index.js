@@ -3263,7 +3263,7 @@ app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res)
             redirect_uri: AE_REDIRECT_URI,
             code
         });
-        const r = await fetch('https://api.aliexpress.com/oauth/token', {
+        const r = await fetch('https://oauth.aliexpress.com/token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString()
