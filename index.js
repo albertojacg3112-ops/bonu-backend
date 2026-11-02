@@ -1,4 +1,6 @@
-// index.js - Bonü Backend v8.0 PRODUCCIÓN COMPLETA (Checkout API + Dashboard + WebSocket + Auditoría + Reportes)
+// index.js - Bonü Backend v8.1 PRODUCCIÓN COMPLETA (Checkout API + Dashboard + WebSocket + Auditoría + Reportes)
+// v8.1: FIXES AliExpress — firma HMAC-SHA256 correcta, ciclo de tokens con expiraciones,
+// callback OAuth /api/aliexpress/callback, token desde Firestore (no env var) y mapeo real de campos del producto.
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -2082,8 +2084,8 @@ app.get('/api/admin/dashboard-full', verificarAdmin, async (req, res) => {
         
         const paymentMethods = {};
         ordenes.forEach(o => {
-            const method = o.pasarela || 'Desconocido';
-            paymentMethods[method] = (paymentMethods[method] || 0) + 1;
+            const llavePago = o.pasarela || 'Desconocido';
+            paymentMethods[llavePago] = (paymentMethods[llavePago] || 0) + 1;
         });
         
         const recentOrders = ordenes
@@ -2341,9 +2343,9 @@ app.get('/api/admin/finanzas/balance', verificarAdmin, async (req, res) => {
             ivaCobrado += (o.total || 0) * 0.16;
             
             const fecha = new Date(o.fecha);
-            const mesKey = `${fecha.getFullYear()}-${String(fecha.getMonth()+1).padStart(2,'0')}`;
-            if (!ventasPorMes[mesKey]) ventasPorMes[mesKey] = 0;
-            ventasPorMes[mesKey] += o.total || 0;
+            const llaveMes = `${fecha.getFullYear()}-${String(fecha.getMonth()+1).padStart(2,'0')}`;
+            if (!ventasPorMes[llaveMes]) ventasPorMes[llaveMes] = 0;
+            ventasPorMes[llaveMes] += o.total || 0;
         });
         
         const gananciaNeta = ingresos - comisiones;
@@ -3170,30 +3172,67 @@ const AE_SECRET = process.env.ALIEXPRESS_APP_SECRET || '';
 let AE_TOKEN = process.env.ALIEXPRESS_ACCESS_TOKEN || '';
 const AE_API_URL = 'https://api-sg.aliexpress.com/sync';
 
-function aeFirmar(params) {
-    const sorted = Object.keys(params).sort();
-    let base = AE_SECRET;
-    sorted.forEach(k => { base += k + params[k]; });
-    base += AE_SECRET;
-    return crypto.createHmac('sha256', AE_SECRET).update(base).digest('hex').toUpperCase();
+/* FIX 1: firma oficial de AliExpress Open Platform con sign_method=sha256.
+   HMAC-SHA256 donde la CLAVE es el app_secret y el MENSAJE es la concatenación
+   ordenada "key1value1key2value2..." — SIN envolver el string con el secret
+   (eso era el estilo MD5 y producía el error de firma inválida).
+   Los parámetros con valor vacío no participan en la firma.
+   Si el gateway rechazara ese estilo, aeLlamar() reintenta automáticamente con la
+   variante que antepone el nombre del API y memoriza el modo válido (AE_SIGN_MODE). */
+let AE_SIGN_MODE = 'plain';
+
+function aeFirmar(params, metodo) {
+    const sorted = Object.keys(params)
+        .filter(k => params[k] !== undefined && params[k] !== null && params[k] !== '')
+        .sort();
+    let base = sorted.map(k => k + params[k]).join('');
+    if (AE_SIGN_MODE === 'prepend' && metodo) base = metodo + base;
+    return crypto.createHmac('sha256', AE_SECRET).update(base, 'utf8').digest('hex').toUpperCase();
 }
 
-async function aeLlamar(metodo, paramsNegocio = {}) {
-    const params = {
-        method: metodo,
-        app_key: AE_KEY,
-        session: await aeTokenFresco(),
-        timestamp: Date.now(),
-        format: 'json',
-        v: '2.0',
-        sign_method: 'sha256',
-        ...paramsNegocio
-    };
-    params.sign = aeFirmar(params);
+function aeEsErrorFirma(data) {
+    const er = data && data.error_response;
+    if (!er) return false;
+    return /sign|signature|签名/i.test(`${er.msg || ''} ${er.sub_msg || ''} ${er.sub_code || ''}`);
+}
+
+async function aePost(params) {
     const qs = new URLSearchParams(params).toString();
     const resp = await fetch(`${AE_API_URL}?${qs}`, { method: 'POST' });
     if (!resp.ok) throw new Error(`AliExpress HTTP ${resp.status}`);
     return resp.json();
+}
+
+async function aeLlamar(metodo, paramsNegocio = {}) {
+    const token = await aeTokenFresco();
+    const construir = () => {
+        const params = {
+            method: metodo,
+            app_key: AE_KEY,
+            timestamp: Date.now(),
+            format: 'json',
+            v: '2.0',
+            sign_method: 'sha256',
+            ...paramsNegocio
+        };
+        if (token) params.session = token; // sin token no se envía session (evita firmar un vacío)
+        delete params.sign;
+        params.sign = aeFirmar(params, metodo);
+        return params;
+    };
+    let data = await aePost(construir());
+    if (aeEsErrorFirma(data)) {
+        const modoPrevio = AE_SIGN_MODE;
+        AE_SIGN_MODE = modoPrevio === 'plain' ? 'prepend' : 'plain';
+        console.warn(`⚠️ AliExpress rechazó la firma (modo "${modoPrevio}"). Reintentando con modo "${AE_SIGN_MODE}"...`);
+        const data2 = await aePost(construir());
+        if (aeEsErrorFirma(data2)) {
+            AE_SIGN_MODE = modoPrevio;
+            console.error('❌ AliExpress: la firma falló en ambos modos. Revisa ALIEXPRESS_APP_SECRET.');
+        }
+        return data2;
+    }
+    return data;
 }
 
 function extraerIdAliexpress(texto) {
@@ -3204,6 +3243,7 @@ function extraerIdAliexpress(texto) {
 }
 /* ========== TOKENS ALIEXPRESS: CANJE + AUTO-RENOVACIÓN ========== */
 const AE_REDIRECT_URI = process.env.ALIEXPRESS_REDIRECT_URI || 'https://xn--bon-joa.com/api/aliexpress/callback';
+const AE_AUTORIZAR_URL = `https://api-sg.aliexpress.com/oauth/authorize?response_type=code&force_auth=true&client_id=${encodeURIComponent(AE_KEY)}&redirect_uri=${encodeURIComponent(AE_REDIRECT_URI)}&sp=ae`;
 
 async function aeLeerTokens() {
     if (!firestore) return null;
@@ -3213,12 +3253,20 @@ async function aeLeerTokens() {
     } catch (e) { return null; }
 }
 
+let AE_RENOVANDO = null;          // lock: evita refreshes concurrentes
+let aeUltimoIntentoRefresh = 0;   // throttle: no martillar si el refresh_token ya murió
+
 async function aeGuardarTokens(data) {
+    const ahora = Date.now();
+    const expiresIn = Number(data.expires_in) || 6 * 86400;        // si no viene, 6 días (conservador)
+    const refreshIn = Number(data.refresh_expires_in) || 25 * 86400;
     const registro = {
         access_token: data.access_token,
-        refresh_token: data.refresh_token || '',
-        emitido: Date.now()
+        access_expira: ahora + expiresIn * 1000,
+        refresh_expira: ahora + refreshIn * 1000,
+        emitido: ahora
     };
+    if (data.refresh_token) registro.refresh_token = data.refresh_token; // no borra el refresh_token previo si la respuesta no lo trae
     if (firestore) await firestore.collection('config').doc('aliexpress_tokens').set(registro, { merge: true });
     AE_TOKEN = registro.access_token;
     return registro;
@@ -3227,27 +3275,72 @@ async function aeGuardarTokens(data) {
 async function aeTokenFresco() {
     const t = await aeLeerTokens();
     if (!t || !t.access_token) return AE_TOKEN;
-    const edadDias = (Date.now() - (t.emitido || 0)) / 86400000;
-    if (edadDias > 40 && t.refresh_token) {
-        try {
-            console.log('🔄 Renovando token AliExpress automáticamente...');
-            const body = new URLSearchParams({
-                grant_type: 'refresh_token',
-                client_id: AE_KEY,
-                client_secret: AE_SECRET,
-                refresh_token: t.refresh_token
-            });
-            const r = await fetch('https://api-sg.aliexpress.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-            const d = await r.json();
-            if (d.access_token) {
-                await aeGuardarTokens(d);
-                console.log('✅ Token AliExpress renovado');
-                return d.access_token;
+    /* FIX 2: el access_token de AliExpress vive 7 días (app en Test) o 30 días (app Online)
+       y el refresh_token 30/180 días. Antes se refrescaba hasta el día 40, cuando ambos ya
+       habían expirado. Ahora se guardan las expiraciones reales en Firestore y se renueva
+       automáticamente cuando al access token le queda menos de 24 h. */
+    const porExpirar = !t.access_expira || (t.access_expira - Date.now()) < 24 * 3600 * 1000;
+    const refreshValido = !!t.refresh_token && (!t.refresh_expira || t.refresh_expira > Date.now());
+    const hacePoco = (Date.now() - aeUltimoIntentoRefresh) < 10 * 60 * 1000;
+    if (porExpirar && refreshValido && !hacePoco) {
+        if (AE_RENOVANDO) return AE_RENOVANDO; // otra petición ya está renovando
+        aeUltimoIntentoRefresh = Date.now();
+        AE_RENOVANDO = (async () => {
+            try {
+                console.log('🔄 Renovando token AliExpress automáticamente (expira pronto)...');
+                const body = new URLSearchParams({
+                    grant_type: 'refresh_token',
+                    client_id: AE_KEY,
+                    client_secret: AE_SECRET,
+                    refresh_token: t.refresh_token
+                });
+                const r = await fetch('https://api-sg.aliexpress.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+                const d = await r.json();
+                if (d.access_token) {
+                    await aeGuardarTokens(d);
+                    console.log('✅ Token AliExpress renovado');
+                    return d.access_token;
+                }
+                console.warn('⚠️ Refresh AliExpress falló:', JSON.stringify(d).slice(0, 300));
+                return t.access_token;
+            } catch (e) {
+                console.warn('⚠️ Error refresh:', e.message);
+                return t.access_token;
+            } finally {
+                AE_RENOVANDO = null;
             }
-            console.warn('⚠️ Refresh AliExpress falló:', JSON.stringify(d).slice(0, 300));
-        } catch (e) { console.warn('⚠️ Error refresh:', e.message); }
+        })();
+        return AE_RENOVANDO;
     }
     return t.access_token;
+}
+
+// Canjea un code de autorización por tokens y los guarda. Lo usan el panel admin y el callback OAuth.
+async function aeCanjearCode(code) {
+    const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        need_refresh_token: 'true',
+        client_id: AE_KEY,
+        client_secret: AE_SECRET,
+        redirect_uri: AE_REDIRECT_URI,
+        code: String(code),
+        sp: 'ae'
+    });
+    const r = await fetch('https://oauth.aliexpress.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+    });
+    const txt = await r.text();
+    console.log('🔍 RAW canje (HTTP ' + r.status + '):', txt.slice(0, 500));
+    if (!txt) throw new Error('AliExpress devolvió respuesta vacía (HTTP ' + r.status + ')');
+    let d;
+    try { d = JSON.parse(txt); } catch (e) { throw new Error('Respuesta no-JSON: ' + txt.slice(0, 200)); }
+    if (!d.access_token) {
+        throw new Error('AliExpress rechazó el code: ' + (d.error_description || d.error || JSON.stringify(d).slice(0, 200)));
+    }
+    await aeGuardarTokens(d);
+    return d;
 }
 
 app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res) => {
@@ -3255,37 +3348,66 @@ app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res)
     if (!code) return res.status(400).json({ success: false, error: 'Falta el code' });
     if (!AE_KEY || !AE_SECRET) return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas' });
     try {
-        const body = new URLSearchParams({
-            grant_type: 'authorization_code',
-            need_refresh_token: 'true',
-            client_id: AE_KEY,
-            client_secret: AE_SECRET,
-            redirect_uri: AE_REDIRECT_URI,
-            code,
-            sp: 'ae'
-        });
-        const r = await fetch('https://oauth.aliexpress.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: body.toString()
-        });
-        const txt = await r.text();
-        console.log('🔍 RAW canje (HTTP ' + r.status + '):', txt.slice(0, 500));
-        if (!txt) throw new Error('AliExpress devolvió respuesta vacía (HTTP ' + r.status + ')');
-        let d;
-        try { d = JSON.parse(txt); } catch(e) { throw new Error('Respuesta no-JSON: ' + txt.slice(0, 200)); }
-        if (!d.access_token) {
-            return res.status(400).json({ success: false, error: 'AliExpress rechazó el code: ' + (d.error_description || d.error || JSON.stringify(d).slice(0, 200)) });
-        }
-        await aeGuardarTokens(d);
+        await aeCanjearCode(code);
         res.json({ success: true, message: 'Token canjeado y guardado. Auto-renovación activa.' });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
 });
+
+/* FIX 4a: endpoint de estado que consume el frontend ("Conectar token AliExpress").
+   Antes NO existía: el modal se quedaba en "Cargando..." y el botón de autorización estaba muerto. */
+app.get('/api/admin/aliexpress/token/estado', verificarAdmin, async (req, res) => {
+    if (!AE_KEY || !AE_SECRET) {
+        return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas (ALIEXPRESS_APP_KEY / ALIEXPRESS_APP_SECRET)' });
+    }
+    try {
+        const t = await aeLeerTokens();
+        const autoRenovacion = !!(t?.refresh_token && (t.refresh_expira || 0) > Date.now());
+        res.json({
+            success: true,
+            hayTokenFirestore: !!t?.access_token,
+            hayTokenEnv: !!AE_TOKEN,
+            diasDesde: t?.emitido ? Math.floor((Date.now() - t.emitido) / 86400000) : null,
+            accessExpiraEnHoras: t?.access_expira ? Math.max(0, Math.floor((t.access_expira - Date.now()) / 3600000)) : null,
+            autoRenovacion,
+            necesitaReautorizar: !!t && !autoRenovacion && (t.access_expira || 0) <= Date.now(),
+            autorizarUrl: AE_AUTORIZAR_URL,
+            redirectUri: AE_REDIRECT_URI
+        });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/* FIX 4b: Callback OAuth de AliExpress.
+   La consola de autorización redirige aquí tras el login: ?code=XXXX
+   El code expira en 30 minutos, así que se canjea inmediatamente y se guardan los
+   tokens (sin requerir sesión admin: es un redirect del navegador de AliExpress). */
+app.get('/api/aliexpress/callback', async (req, res) => {
+    const { code, error, error_description } = req.query;
+    if (error) return res.status(400).send(`❌ Error de autorización AliExpress: ${error_description || error}`);
+    if (!code) return res.status(400).send('Falta el parámetro code');
+    if (!AE_KEY || !AE_SECRET) return res.status(500).send('Credenciales AliExpress no configuradas en el servidor');
+    try {
+        await aeCanjearCode(code);
+        res.send('<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Bonü · AliExpress</title></head><body style="font-family:sans-serif;text-align:center;padding:3rem;"><h1>✅ AliExpress conectado</h1><p>Token canjeado y guardado con auto-renovación. Ya puedes cerrar esta ventana y volver al panel de Bonü.</p></body></html>');
+    } catch (e) {
+        console.error('❌ Error canjeando code en callback AliExpress:', e.message);
+        res.status(500).send('❌ Error canjeando el token: ' + e.message);
+    }
+});
+
 app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
-    if (!AE_KEY || !AE_SECRET || !AE_TOKEN) {
+    if (!AE_KEY || !AE_SECRET) {
         return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas en el servidor' });
+    }
+    /* FIX 3: el token se resuelve desde Firestore (con auto-refresh), no desde la
+       variable de entorno ALIEXPRESS_ACCESS_TOKEN. Antes el guard exigía esa env var,
+       por lo que el endpoint moría tras cada redeploy aunque hubiera token guardado. */
+    const tokenDisponible = await aeTokenFresco();
+    if (!tokenDisponible) {
+        return res.status(500).json({ success: false, error: 'No hay token de AliExpress. Autoriza la app y canjea el code primero.' });
     }
     const raw = req.query.id || '';
     if (!raw) return res.status(400).json({ success: false, error: 'Falta id o URL del producto' });
@@ -3326,25 +3448,108 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
             });
         }
 
+        /* FIX 5: mapeo de campos. La respuesta real de aliexpress.ds.product.get
+           anida los datos en:
+             result.item.ae_item_base_info_dto  -> subject, image_urls
+             result.item.ae_item_sku_info_dtos  -> lista de SKUs con precios reales
+           Se conservan fallbacks a las rutas planas por compatibilidad. */
+        const base = item.ae_item_base_info_dto || {};
+        const nombre = base.subject || item.subject || item.title || '';
+
         let imagenes = [];
-        if (Array.isArray(item.image_urls)) imagenes = item.image_urls;
-        else if (typeof item.image_urls === 'string') imagenes = item.image_urls.split(';').filter(Boolean);
+        const urlsImg = base.image_urls ?? item.image_urls;
+        if (Array.isArray(urlsImg)) imagenes = urlsImg.filter(Boolean);
+        else if (typeof urlsImg === 'string') imagenes = urlsImg.split(';').filter(Boolean);
+
+        let skus = [];
+        const skuDtos = item.ae_item_sku_info_dtos;
+        if (skuDtos) {
+            skus = Array.isArray(skuDtos.ae_item_sku_info_d_t_o) ? skuDtos.ae_item_sku_info_d_t_o
+                 : Array.isArray(skuDtos.ae_item_sku_info_dto) ? skuDtos.ae_item_sku_info_dto
+                 : Array.isArray(skuDtos) ? skuDtos : [];
+        }
+
+        let precio = 0, moneda = 'MXN';
+        for (const s of skus) {
+            const p = parseFloat(s.target_sale_price ?? s.offer_sale_price ?? s.sale_price);
+            if (!Number.isNaN(p) && p > 0 && (precio === 0 || p < precio)) {
+                precio = p;
+                moneda = s.target_sale_price_currency || s.offer_sale_price_currency || moneda;
+            }
+        }
+        if (!precio) {
+            precio = parseFloat(item.target_sale_price || item.sale_price || item.offer_sale_price || 0) || 0;
+            moneda = item.target_sale_price_currency || 'MXN';
+        }
+
+        let stock = null;
+        const cantidades = skus
+            .map(s => parseInt(s.total_available_quantity ?? s.available_quantity ?? '', 10))
+            .filter(n => !Number.isNaN(n));
+        if (cantidades.length) stock = cantidades.reduce((a, b) => a + b, 0);
 
         res.json({
             success: true,
             data: {
                 id: productId,
-                nombre: item.title || item.subject || '',
-                precio: parseFloat(item.target_sale_price || item.sale_price || item.offer_sale_price || 0) || 0,
-                moneda: item.target_sale_price_currency || 'MXN',
+                nombre,
+                precio,
+                moneda,
                 imagenes,
                 descripcion: item.detail || '',
-                stock: item.total_available_quantity || null
+                stock
             }
         });
     } catch (error) {
         console.error('❌ Error AliExpress:', error.message);
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* ========== EMAIL DE CAMPAÑAS (consumido por el panel admin del frontend) ========== */
+// FIX: este endpoint no existía y el botón "enviar campaña" del frontend siempre fallaba con 404.
+app.post('/api/admin/send-email', verificarAdmin, async (req, res) => {
+    const { to, subject, body, imageUrl } = req.body || {};
+    if (!to || !subject || !body) {
+        return res.status(400).json({ success: false, error: 'Faltan to, subject o body' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(to))) {
+        return res.status(400).json({ success: false, error: 'Email destinatario inválido' });
+    }
+    if (!emailTransporter) {
+        return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER / EMAIL_PASS)' });
+    }
+    const imgHtml = imageUrl
+        ? `<img src="${String(imageUrl).replace(/"/g, '&quot;')}" alt="Bonü" style="max-width:100%;border-radius:12px;display:block;margin:0 auto 16px;">`
+        : '';
+    const html = `<!DOCTYPE html><html lang="es"><body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif;">
+        <div style="max-width:600px;margin:0 auto;padding:24px;background:#ffffff;border-radius:16px;">
+            <div style="text-align:center;padding-bottom:16px;border-bottom:2px solid #facc15;">
+                <span style="font-size:28px;font-weight:800;color:#0a0a0a;">Bon<span style="color:#facc15;">ü</span></span>
+                <div style="font-size:12px;color:#6b7280;">Global Marketplace</div>
+            </div>
+            ${imgHtml}
+            <div style="font-size:15px;color:#111827;line-height:1.6;">${String(body)}</div>
+            <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#6b7280;text-align:center;">
+                📧 bonu.marketplace@gmail.com &nbsp;|&nbsp; 📞 322 270 0732 &nbsp;|&nbsp; RFC: CAGJ791031159<br>
+                © 2007-${new Date().getFullYear()} Bonü - Todos los derechos reservados
+            </div>
+        </div></body></html>`;
+    try {
+        await Promise.race([
+            emailTransporter.sendMail({
+                from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
+                to: String(to),
+                subject: String(subject).slice(0, 200),
+                html
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 15000))
+        ]);
+        console.log(`📧 Campaña/envío admin enviado a ${to}`);
+        res.json({ success: true, message: 'Correo enviado a ' + to });
+    } catch (e) {
+        console.error('❌ Error send-email:', e.message);
+        res.status(500).json({ success: false, error: e.message });
     }
 });
 
@@ -3461,7 +3666,7 @@ app.use((err, req, res, next) => {
 /* ========== ARRANQUE ========== */
 server.listen(PORT, '0.0.0.0', () => {
     console.log('==================================================');
-    console.log('✅ Bonü Backend v8.0 - PRODUCCIÓN COMPLETA');
+    console.log('✅ Bonü Backend v8.1 - PRODUCCIÓN COMPLETA (AliExpress FIX aplicado)');
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🌍 Entorno: ${NODE_ENV}`);
     console.log(`🔥 Firestore: ${firestore ? '✅ CONECTADO' : '❌ NO DISPONIBLE'}`);
