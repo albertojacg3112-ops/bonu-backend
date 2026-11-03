@@ -3326,7 +3326,7 @@ async function aeCanjearCode(code) {
         code: String(code),
         sp: 'ae'
     });
-    const r = await fetch('https://oauth.aliexpress.com/token', {
+        const r = await fetch('https://api-sg.aliexpress.com/oauth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString()
