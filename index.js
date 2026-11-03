@@ -3242,7 +3242,7 @@ function extraerIdAliexpress(texto) {
     return m ? m[1] : t;
 }
 /* ========== TOKENS ALIEXPRESS: CANJE + AUTO-RENOVACIÓN ========== */
-const AE_REDIRECT_URI = process.env.ALIEXPRESS_REDIRECT_URI || 'https://xn--bon-joa.com/api/aliexpress/callback';
+const AE_REDIRECT_URI = process.env.ALIEXPRESS_REDIRECT_URI || 'https://bonu-backend.onrender.com/api/aliexpress/callback';
 const AE_AUTORIZAR_URL = `https://api-sg.aliexpress.com/oauth/authorize?response_type=code&force_auth=true&client_id=${encodeURIComponent(AE_KEY)}&redirect_uri=${encodeURIComponent(AE_REDIRECT_URI)}&sp=ae`;
 
 async function aeLeerTokens() {
