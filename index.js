@@ -3258,12 +3258,14 @@ let aeUltimoIntentoRefresh = 0;   // throttle: no martillar si el refresh_token 
 
 async function aeGuardarTokens(data) {
     const ahora = Date.now();
-    const expiresIn = Number(data.expires_in) || 6 * 86400;        // si no viene, 6 días (conservador)
-    const refreshIn = Number(data.refresh_expires_in) || 25 * 86400;
+        let accessExpira = Number(data.expire_time) || (ahora + (Number(data.expires_in) || 6 * 86400) * 1000);
+    let refreshExpira = Number(data.refresh_token_valid_time) || (ahora + (Number(data.refresh_expires_in) || 25 * 86400) * 1000);
+    if (accessExpira < 1e12) accessExpira *= 1000;   // por si viniera en segundos
+    if (refreshExpira < 1e12) refreshExpira *= 1000;
     const registro = {
         access_token: data.access_token,
-        access_expira: ahora + expiresIn * 1000,
-        refresh_expira: ahora + refreshIn * 1000,
+        access_expira: accessExpira,
+        refresh_expira: refreshExpira,
         emitido: ahora
     };
     if (data.refresh_token) registro.refresh_token = data.refresh_token; // no borra el refresh_token previo si la respuesta no lo trae
