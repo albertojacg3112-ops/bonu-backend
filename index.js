@@ -3351,17 +3351,6 @@ async function aePostFirmado(metodo, paramsNegocio = {}) {
     }
     return data;
 }
-
-/* Normaliza la respuesta de token: puede venir plana, dentro de result (objeto)
-   o dentro de result como string JSON. */
-function aeExtraerTokenPayload(d) {
-    if (!d) return null;
-    if (typeof d.result === 'string') { try { return JSON.parse(d.result); } catch (_) { return null; } }
-    if (d.result && typeof d.result === 'object' && d.result.access_token) return d.result;
-    if (d.access_token) return d;
-    return null;
-}
-
 // Canjea un code de autorización por tokens y los guarda (API oficial /auth/token/create).
 async function aeCanjearCode(code) {
     const d = await aePostFirmado('/auth/token/create', { code: String(code).trim() });
