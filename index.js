@@ -3288,18 +3288,12 @@ async function aeTokenFresco() {
         AE_RENOVANDO = (async () => {
             try {
                 console.log('🔄 Renovando token AliExpress automáticamente (expira pronto)...');
-                const body = new URLSearchParams({
-                    grant_type: 'refresh_token',
-                    client_id: AE_KEY,
-                    client_secret: AE_SECRET,
-                    refresh_token: t.refresh_token
-                });
-                const r = await fetch('https://api-sg.aliexpress.com/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-                const d = await r.json();
-                if (d.access_token) {
-                    await aeGuardarTokens(d);
+                               const d = await aePostFirmado('/auth/token/refresh', { refresh_token: t.refresh_token });
+                const payload = aeExtraerTokenPayload(d);
+                if (payload && payload.access_token) {
+                    await aeGuardarTokens(payload);
                     console.log('✅ Token AliExpress renovado');
-                    return d.access_token;
+                    return payload.access_token;
                 }
                 console.warn('⚠️ Refresh AliExpress falló:', JSON.stringify(d).slice(0, 300));
                 return t.access_token;
@@ -3315,34 +3309,69 @@ async function aeTokenFresco() {
     return t.access_token;
 }
 
-// Canjea un code de autorización por tokens y los guarda. Lo usan el panel admin y el callback OAuth.
-async function aeCanjearCode(code) {
-    const body = new URLSearchParams({
-        grant_type: 'authorization_code',
-        need_refresh_token: 'true',
-        client_id: AE_KEY,
-        client_secret: AE_SECRET,
-        redirect_uri: AE_REDIRECT_URI,
-        code: String(code),
-        sp: 'ae'
-    });
-        const r = await fetch('https://api-sg.aliexpress.com/oauth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString()
-    });
-    const txt = await r.text();
-    console.log('🔍 RAW canje (HTTP ' + r.status + '):', txt.slice(0, 500));
-    if (!txt) throw new Error('AliExpress devolvió respuesta vacía (HTTP ' + r.status + ')');
-    let d;
-    try { d = JSON.parse(txt); } catch (e) { throw new Error('Respuesta no-JSON: ' + txt.slice(0, 200)); }
-    if (!d.access_token) {
-        throw new Error('AliExpress rechazó el code: ' + (d.error_description || d.error || JSON.stringify(d).slice(0, 200)));
+/* POST firmado genérico al gateway /sync (protocolo GOP de openservice).
+   Lo usan /auth/token/create (canje) y /auth/token/refresh (renovación):
+   en la plataforma nueva NO existe /oauth/token, los tokens se piden
+   como APIs firmadas igual que los demás endpoints. */
+async function aePostFirmado(metodo, paramsNegocio = {}) {
+    const construir = () => {
+        const params = {
+            method: metodo,
+            app_key: AE_KEY,
+            timestamp: Date.now(),
+            format: 'json',
+            v: '2.0',
+            sign_method: 'sha256',
+            ...paramsNegocio
+        };
+        delete params.sign;
+        params.sign = aeFirmar(params, metodo);
+        return params;
+    };
+    let data = await aePost(construir());
+    if (aeEsErrorFirma(data)) {
+        const modoPrevio = AE_SIGN_MODE;
+        AE_SIGN_MODE = modoPrevio === 'plain' ? 'prepend' : 'plain';
+        console.warn(`⚠️ AliExpress rechazó la firma (modo "${modoPrevio}") en ${metodo}. Reintentando con modo "${AE_SIGN_MODE}"...`);
+        const data2 = await aePost(construir());
+        if (aeEsErrorFirma(data2)) {
+            AE_SIGN_MODE = modoPrevio;
+            console.error('❌ AliExpress: la firma falló en ambos modos. Revisa ALIEXPRESS_APP_SECRET.');
+        }
+        return data2;
     }
-    await aeGuardarTokens(d);
-    return d;
+    return data;
 }
 
+/* Normaliza la respuesta de token: puede venir plana, dentro de result (objeto)
+   o dentro de result como string JSON. */
+function aeExtraerTokenPayload(d) {
+    if (!d) return null;
+    if (typeof d.result === 'string') { try { return JSON.parse(d.result); } catch (_) { return null; } }
+    if (d.result && typeof d.result === 'object' && d.result.access_token) return d.result;
+    if (d.access_token) return d;
+    return null;
+}
+
+// Canjea un code de autorización por tokens y los guarda (API oficial /auth/token/create).
+async function aeCanjearCode(code) {
+    const d = await aePostFirmado('/auth/token/create', { code: String(code).trim() });
+    console.log('🔍 RAW canje:', JSON.stringify(d).slice(0, 800));
+    if (d.error_response) {
+        const er = d.error_response;
+        throw new Error('AliExpress rechazó el code: ' + (er.sub_msg || er.msg || JSON.stringify(er).slice(0, 200)));
+    }
+    if (d.code !== undefined && String(d.code) !== '0') {
+        throw new Error(('AliExpress rechazó el code: ' + (d.msg || '') + ' ' + (d.sub_msg || '')).trim());
+    }
+    const payload = aeExtraerTokenPayload(d);
+    if (!payload || !payload.access_token) {
+        throw new Error('Respuesta sin access_token: ' + JSON.stringify(d).slice(0, 300));
+    }
+    await aeGuardarTokens(payload);
+    console.log('✅ Token AliExpress canjeado y guardado');
+    return payload;
+}
 app.post('/api/admin/aliexpress/token/canjear', verificarAdmin, async (req, res) => {
     const { code } = req.body || {};
     if (!code) return res.status(400).json({ success: false, error: 'Falta el code' });
