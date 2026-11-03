@@ -413,12 +413,12 @@ async function verificarAuthOpcional(req, res, next) {
 }
 
 /* ========== VARIABLES DE ENTORNO ========== */
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-const MERCADO_PAGO_ACCESS_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
-const BONUPAY_ACCESS_TOKEN = process.env.BONUPAY_ACCESS_TOKEN;
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
+const STRIPE_SECRET_KEY = (process.env.STRIPE_SECRET_KEY || '').trim();
+const STRIPE_WEBHOOK_SECRET = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+const MERCADO_PAGO_ACCESS_TOKEN = (process.env.MERCADO_PAGO_ACCESS_TOKEN || '').trim();
+const BONUPAY_ACCESS_TOKEN = (process.env.BONUPAY_ACCESS_TOKEN || '').trim();
+const PAYPAL_CLIENT_ID = (process.env.PAYPAL_CLIENT_ID || '').trim();
+const PAYPAL_CLIENT_SECRET = (process.env.PAYPAL_CLIENT_SECRET || '').trim();
 const PAYPAL_MODE = process.env.PAYPAL_MODE || 'live';
 const CJ_API_KEY = process.env.CJ_API_KEY;
 const CJ_API_URL = 'https://developers.cjdropshipping.com/api2.0/v1';
@@ -548,7 +548,7 @@ app.post('/api/payments/stripe/create-intent', paymentLimiter, async (req, res) 
             currency: 'mxn',
             metadata: { checkoutToken },
             receipt_email: customerEmail || tokenData.customerEmail,
-            statement_descriptor: 'Bonu Marketplace',
+                       statement_descriptor_suffix: 'Bonu',
             description: `Pedido Bonü - ${checkoutToken.substring(0, 8)}`
         });
         
@@ -1577,7 +1577,7 @@ app.get('/api/products', async (req, res) => {
         if (categoria) query = query.where('categoria', '==', categoria);
         if (tipo) query = query.where('tipo', '==', tipo);
         
-        const snapshot = await query.orderBy('fechaAgregado', 'desc').limit(parseInt(limit)).get();
+         const snapshot = await query.limit(parseInt(limit)).get();
         let productos = [];
         
         snapshot.forEach(doc => {
