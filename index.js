@@ -3287,23 +3287,16 @@ async function aeTokenFresco() {
     if (porExpirar && refreshValido && !hacePoco) {
         if (AE_RENOVANDO) return AE_RENOVANDO; // otra petición ya está renovando
         aeUltimoIntentoRefresh = Date.now();
-        AE_RENOVANDO = (async () => {
+                AE_RENOVANDO = (async () => {
             try {
                 console.log('🔄 Renovando token AliExpress automáticamente (expira pronto)...');
-                               const d = await aePostFirmado('/auth/token/refresh', { refresh_token: t.refresh_token });
-                /* Normaliza la respuesta de token: plana, dentro de result (objeto/string),
-   o envuelta al estilo GOP: {"/auth/token/create_response": {...}} o
-   {"/auth/token/refresh_response": {...}} — aquí se desenrolla la envoltura. */
-function aeExtraerTokenPayload(d) {
-    if (!d) return null;
-    if (typeof d.result === 'string') { try { return JSON.parse(d.result); } catch (_) { return null; } }
-    if (d.result && typeof d.result === 'object' && d.result.access_token) return d.result;
-    if (d.access_token) return d;
-    for (const k of Object.keys(d)) {
-        if (k.endsWith('_response') && d[k] && typeof d[k] === 'object' && d[k].access_token) return d[k];
-    }
-    return null;
-}
+                const d = await aePostFirmado('/auth/token/refresh', { refresh_token: t.refresh_token });
+                const payload = aeExtraerTokenPayload(d);
+                if (payload && payload.access_token) {
+                    await aeGuardarTokens(payload);
+                    console.log('✅ Token AliExpress renovado');
+                    return payload.access_token;
+                }
                 console.warn('⚠️ Refresh AliExpress falló:', JSON.stringify(d).slice(0, 300));
                 return t.access_token;
             } catch (e) {
