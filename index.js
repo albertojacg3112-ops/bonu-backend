@@ -1596,6 +1596,7 @@ app.get('/api/products', async (req, res) => {
             );
         }
         
+        productos.sort((a, b) => String(b.fechaAgregado || '').localeCompare(String(a.fechaAgregado || '')));
         res.json({ success: true, productos });
     } catch (error) {
         console.error('Error en /api/products:', error);
