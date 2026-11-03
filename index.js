@@ -3274,6 +3274,19 @@ async function aeGuardarTokens(data) {
     return registro;
 }
 
+/* Normaliza la respuesta de token: plana, dentro de result (objeto/string),
+   o envuelta al estilo GOP: {"/auth/token/create_response": {...}} o
+   {"/auth/token/refresh_response": {...}} — aquí se desenrolla la envoltura. */
+function aeExtraerTokenPayload(d) {
+    if (!d) return null;
+    if (typeof d.result === 'string') { try { return JSON.parse(d.result); } catch (_) { return null; } }
+    if (d.result && typeof d.result === 'object' && d.result.access_token) return d.result;
+    if (d.access_token) return d;
+    for (const k of Object.keys(d)) {
+        if (k.endsWith('_response') && d[k] && typeof d[k] === 'object' && d[k].access_token) return d[k];
+    }
+    return null;
+}
 async function aeTokenFresco() {
     const t = await aeLeerTokens();
     if (!t || !t.access_token) return AE_TOKEN;
