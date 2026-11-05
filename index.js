@@ -3436,9 +3436,6 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
     if (!AE_KEY || !AE_SECRET) {
         return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas en el servidor' });
     }
-    /* FIX 3: el token se resuelve desde Firestore (con auto-refresh), no desde la
-       variable de entorno ALIEXPRESS_ACCESS_TOKEN. Antes el guard exigía esa env var,
-       por lo que el endpoint moría tras cada redeploy aunque hubiera token guardado. */
     const tokenDisponible = await aeTokenFresco();
     if (!tokenDisponible) {
         return res.status(500).json({ success: false, error: 'No hay token de AliExpress. Autoriza la app y canjea el code primero.' });
@@ -3447,6 +3444,23 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
     if (!raw) return res.status(400).json({ success: false, error: 'Falta id o URL del producto' });
     const productId = extraerIdAliexpress(raw);
     if (!productId) return res.status(400).json({ success: false, error: 'No pude extraer el ID del producto de: ' + raw });
+
+    /* Busca una clave a CUALQUIER profundidad del objeto. La respuesta real de
+       aliexpress.ds.product.get cambia de forma según versión/región: a veces
+       anida todo en result.item y a veces los DTOs cuelgan directo de result.
+       Esto hace el mapeo inmune a esas diferencias (v9). */
+    const buscar = (obj, clave, prof = 0) => {
+        if (!obj || typeof obj !== 'object' || prof > 8) return undefined;
+        if (obj[clave] !== undefined) return obj[clave];
+        for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (v && typeof v === 'object') {
+                const hallado = buscar(v, clave, prof + 1);
+                if (hallado !== undefined) return hallado;
+            }
+        }
+        return undefined;
+    };
 
     try {
         const data = await aeLlamar('aliexpress.ds.product.get', {
@@ -3473,73 +3487,114 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
             });
         }
         const result = r.result || {};
-        const item = result.item || result.awsitem_info?.item || result.data?.item || null;
-        if (!item) {
+        if (!result || typeof result !== 'object' || Object.keys(result).length === 0) {
             return res.status(400).json({
                 success: false,
-                error: `AliExpress no devolvió el producto (código ${result.error_code || '?'}). Diagnóstico abajo.`,
+                error: `AliExpress no devolvió datos del producto ${productId} (código ${result.error_code || '?'}).`,
                 raw: JSON.stringify(data).slice(0, 2000)
             });
         }
 
-        /* FIX 5: mapeo de campos. La respuesta real de aliexpress.ds.product.get
-           anida los datos en:
-             result.item.ae_item_base_info_dto  -> subject, image_urls
-             result.item.ae_item_sku_info_dtos  -> lista de SKUs con precios reales
-           Se conservan fallbacks a las rutas planas por compatibilidad. */
-        const base = item.ae_item_base_info_dto || {};
-        const nombre = base.subject || item.subject || item.title || '';
+        /* ---------- MAPEO ANTIFRÁGIL v9 (basado en la respuesta REAL) ---------- */
+
+        // 1) Nombre e imágenes base (ae_item_base_info_dto, donde sea que esté)
+        const base = buscar(result, 'ae_item_base_info_dto') || {};
+        let nombre = base.subject || buscar(result, 'subject') || '';
 
         let imagenes = [];
-        const urlsImg = base.image_urls ?? item.image_urls;
+        const urlsImg = base.image_urls ?? buscar(result, 'image_urls');
         if (Array.isArray(urlsImg)) imagenes = urlsImg.filter(Boolean);
         else if (typeof urlsImg === 'string') imagenes = urlsImg.split(';').filter(Boolean);
 
+        // 2) Galería (ae_media_dtos) por si base.image_urls viene vacío
+        if (!imagenes.length) {
+            const media = buscar(result, 'ae_media_dtos');
+            const lista = media?.ae_media_v_o || media?.medias || [];
+            for (const m of (Array.isArray(lista) ? lista : [])) {
+                if (m.media_url) imagenes.push(m.media_url);
+            }
+        }
+
+        // 3) SKUs / variantes — clave confirmada en la respuesta real
+        const skuDtos = buscar(result, 'ae_item_sku_info_dtos');
         let skus = [];
-        const skuDtos = item.ae_item_sku_info_dtos;
         if (skuDtos) {
             skus = Array.isArray(skuDtos.ae_item_sku_info_d_t_o) ? skuDtos.ae_item_sku_info_d_t_o
                  : Array.isArray(skuDtos.ae_item_sku_info_dto) ? skuDtos.ae_item_sku_info_dto
                  : Array.isArray(skuDtos) ? skuDtos : [];
         }
 
+        // 4) Precio: el menor entre variantes CON stock; si ninguna tiene, el menor global.
+        //    Campos reales: offer_sale_price (con descuento) y sku_price (lista).
+        const precioDe = s => {
+            const p = parseFloat(s.target_sale_price ?? s.offer_sale_price ?? s.sku_price ?? s.sale_price);
+            return Number.isNaN(p) ? 0 : p;
+        };
+        const stockDe = s => parseInt(s.sku_available_stock ?? s.total_available_quantity ?? s.available_quantity ?? 0, 10) || 0;
+        const conStock = skus.filter(s => stockDe(s) > 0);
+        const fuente = conStock.length ? conStock : skus;
         let precio = 0, moneda = 'MXN';
-        for (const s of skus) {
-            const p = parseFloat(s.target_sale_price ?? s.offer_sale_price ?? s.sale_price);
-            if (!Number.isNaN(p) && p > 0 && (precio === 0 || p < precio)) {
+        for (const s of fuente) {
+            const p = precioDe(s);
+            if (p > 0 && (precio === 0 || p < precio)) {
                 precio = p;
-                moneda = s.target_sale_price_currency || s.offer_sale_price_currency || moneda;
+                moneda = s.target_sale_price_currency || s.currency_code || moneda;
             }
         }
-        if (!precio) {
-            precio = parseFloat(item.target_sale_price || item.sale_price || item.offer_sale_price || 0) || 0;
-            moneda = item.target_sale_price_currency || 'MXN';
+
+        // 5) Stock total: suma de sku_available_stock de todas las variantes
+        let stock = null;
+        const cantidades = skus.map(s => stockDe(s)).filter(n => !Number.isNaN(n));
+        if (cantidades.length) stock = cantidades.reduce((a, b) => a + b, 0);
+
+        // 6) Último recurso para imágenes: las fotos de las variantes (sku_image)
+        if (!imagenes.length) {
+            for (const s of skus) {
+                const props = s.ae_sku_property_dtos?.ae_sku_property_d_t_o
+                           || s.ae_sku_property_dtos?.ae_sku_property_d_t_o_s || [];
+                for (const pr of (Array.isArray(props) ? props : [])) {
+                    if (pr.sku_image && !imagenes.includes(pr.sku_image)) imagenes.push(pr.sku_image);
+                }
+            }
         }
 
-        let stock = null;
-        const cantidades = skus
-            .map(s => parseInt(s.total_available_quantity ?? s.available_quantity ?? '', 10))
-            .filter(n => !Number.isNaN(n));
-        if (cantidades.length) stock = cantidades.reduce((a, b) => a + b, 0);
+        // 7) Variantes legibles (color/talla + precio + stock + foto) para uso futuro
+        const variantes = skus.map(s => {
+            const props = s.ae_sku_property_dtos?.ae_sku_property_d_t_o || [];
+            const atributos = (Array.isArray(props) ? props : [])
+                .map(pr => `${pr.sku_property_name || ''}: ${pr.sku_property_value || pr.property_value_definition_name || ''}`.trim())
+                .filter(Boolean);
+            return {
+                atributos,
+                precio: precioDe(s),
+                moneda: s.target_sale_price_currency || s.currency_code || 'MXN',
+                stock: stockDe(s),
+                imagen: (Array.isArray(props) ? props : [])[0]?.sku_image || ''
+            };
+        });
+
+        // 8) Descripción (si viene; la API a veces la sirve aparte)
+        const descripcion = base.detail || buscar(result, 'detail') || '';
+
+        // 9) Guarda: si a pesar de todo no hay nada útil, error honesto
+        if (!nombre && !skus.length && !imagenes.length) {
+            return res.status(400).json({
+                success: false,
+                error: 'AliExpress respondió pero sin datos útiles (posible producto restringido o no autorizado).',
+                raw: JSON.stringify(data).slice(0, 1500)
+            });
+        }
+        if (!nombre) nombre = 'Producto AliExpress ' + productId;
 
         res.json({
             success: true,
-            data: {
-                id: productId,
-                nombre,
-                precio,
-                moneda,
-                imagenes,
-                descripcion: item.detail || '',
-                stock
-            }
+            data: { id: productId, nombre, precio, moneda, imagenes, descripcion, stock, variantes }
         });
     } catch (error) {
         console.error('❌ Error AliExpress:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
-
 /* ========== EMAIL DE CAMPAÑAS (consumido por el panel admin del frontend) ========== */
 // FIX: este endpoint no existía y el botón "enviar campaña" del frontend siempre fallaba con 404.
 app.post('/api/admin/send-email', verificarAdmin, async (req, res) => {
