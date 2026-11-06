@@ -412,6 +412,121 @@ async function verificarAuthOpcional(req, res, next) {
     next();
 }
 
+/* ============================================================
+   ========== SAGA 4 · MOTOR DE PRECIOS + CASHBACK v10 ==========
+   Reglas de negocio (definidas por el dueño de Bonü):
+   · Cashback base 5% en TODAS las compras.
+   · 10% si el total supera $45,000 MXN y TODOS los productos
+     van en cantidades de 6 piezas o más.
+   · 15% si el total supera $60,000 MXN.
+   · 7%, 8%, 10%, 12%, 15%, 18% y 20%: promos por producto
+     (campo cashbackPromo en el documento del producto) que el
+     admin publica cuando decida; se aplican línea por línea
+     cuando son mayores al nivel del carrito. Tope: 20%.
+   · El precio de venta se calcula para que DESPUÉS de regalar
+     el cashback quede la ganancia elegida sobre el costo:
+       precio = (costo + envío) × (1 + margen%) / (1 − cashback%)
+   ============================================================ */
+const LISTA_MARGENES = [5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 65, 70, 75, 80, 85, 90, 95, 100, 110, 120];
+const LISTA_CASHBACK = [5, 7, 8, 10, 12, 15, 18, 20];
+const CASHBACK_BASE = 5;
+const CASHBACK_MAX_PRODUCTO = 20;
+const UMBRAL_CASHBACK_10 = 45000;
+const UMBRAL_CASHBACK_15 = 60000;
+const QTY_MIN_CASHBACK_10 = 6;
+
+/* Config editable guardada en Firestore (config/precios); valores por defecto si no existe */
+const CONFIG_PRECIOS_DEFAULT = { margenDefault: 40, cashbackDefault: 5, descMayoreo6: 10 };
+let configPrecios = { ...CONFIG_PRECIOS_DEFAULT };
+
+async function cargarConfigPrecios() {
+    if (!firestore) return configPrecios;
+    try {
+        const docCfg = await firestore.collection('config').doc('precios').get();
+        if (docCfg.exists) {
+            const d = docCfg.data();
+            configPrecios = {
+                margenDefault: LISTA_MARGENES.includes(d.margenDefault) ? d.margenDefault : CONFIG_PRECIOS_DEFAULT.margenDefault,
+                cashbackDefault: LISTA_CASHBACK.includes(d.cashbackDefault) ? d.cashbackDefault : CONFIG_PRECIOS_DEFAULT.cashbackDefault,
+                descMayoreo6: (typeof d.descMayoreo6 === 'number' && d.descMayoreo6 >= 0 && d.descMayoreo6 <= 50) ? d.descMayoreo6 : CONFIG_PRECIOS_DEFAULT.descMayoreo6
+            };
+        }
+    } catch (e) {
+        console.error('⚠️ No pude leer config/precios (uso valores por defecto):', e.message);
+    }
+    return configPrecios;
+}
+
+/* Redondeo comercial: termina en .99 y NUNCA queda por debajo del cálculo */
+function redondeo99(x) {
+    if (!Number.isFinite(x) || x <= 0) return 0;
+    let p = Math.floor(x) + 0.99;
+    if (p < x - 1e-9) p += 1;
+    return Math.round(p * 100) / 100;
+}
+
+/* Motor principal: precio de venta que deja la ganancia elegida DESPUÉS del cashback */
+function calcularPrecioVenta({ costo, envio = 0, margen, cashback = CASHBACK_BASE, descMayoreo6 = null }) {
+    const dm = (typeof descMayoreo6 === 'number' && descMayoreo6 >= 0 && descMayoreo6 <= 50) ? descMayoreo6 : configPrecios.descMayoreo6;
+    const costoTotal = (parseFloat(costo) || 0) + (parseFloat(envio) || 0);
+    const m = Math.max(0, parseFloat(margen) || 0);
+    const cb = Math.min(CASHBACK_MAX_PRODUCTO, Math.max(0, parseFloat(cashback) || CASHBACK_BASE));
+    const netoDeseado = costoTotal * (1 + m / 100);                 // lo que quiero recibir neto por pieza
+    const precioFinal = redondeo99(netoDeseado / (1 - cb / 100));   // precio que anula el costo del cashback
+    const precio6 = redondeo99(precioFinal * 6 * (1 - dm / 100));   // paquete 6 piezas con desc. mayoreo
+    const gananciaReal = Math.round((precioFinal * (1 - cb / 100) - costoTotal) * 100) / 100;
+    return {
+        costo: Math.round(costoTotal * 100) / 100,
+        margen: m,
+        cashback: cb,
+        descMayoreo6: dm,
+        precioFinal,
+        precio6,
+        gananciaRealPorPieza: gananciaReal,
+        margenRealSobrePrecio: precioFinal > 0 ? Math.round(gananciaReal / precioFinal * 1000) / 10 : 0
+    };
+}
+
+/* Tabla comparativa: el mismo costo a TODOS los márgenes de la lista fija */
+function tablaPreciosPorMargen({ costo, envio = 0, cashback = CASHBACK_BASE, descMayoreo6 = null }) {
+    return LISTA_MARGENES.map(m => {
+        const r = calcularPrecioVenta({ costo, envio, margen: m, cashback, descMayoreo6 });
+        return { margen: m, precioFinal: r.precioFinal, precio6: r.precio6, gananciaRealPorPieza: r.gananciaRealPorPieza };
+    });
+}
+
+/* Nivel de cashback de un carrito según las reglas del dueño */
+function nivelCashbackCarrito(items, totalCompra) {
+    const total = Math.max(parseFloat(totalCompra) || 0, 0);
+    let pct = CASHBACK_BASE, nivel = 'base_5';
+    const todasQty6 = Array.isArray(items) && items.length > 0 && items.every(i => (parseInt(i.cantidad) || 0) >= QTY_MIN_CASHBACK_10);
+    if (total > UMBRAL_CASHBACK_15) { pct = 15; nivel = 'total_mayor_60000'; }
+    else if (total > UMBRAL_CASHBACK_10 && todasQty6) { pct = 10; nivel = 'total_mayor_45000_y_6piezas'; }
+    return { pct, nivel, todasQty6, total };
+}
+
+/* Cashback total de una orden: nivel del carrito, o el promo del producto si es mayor (línea por línea) */
+function calcularCashbackOrden(items, totalCompra) {
+    const { pct: pctNivel, nivel } = nivelCashbackCarrito(items, totalCompra);
+    let monto = 0;
+    const lineas = [];
+    for (const i of (Array.isArray(items) ? items : [])) {
+        const baseLinea = (parseFloat(i.precioReal) || 0) * (parseInt(i.cantidad) || 0);
+        const promo = Math.min(CASHBACK_MAX_PRODUCTO, Math.max(0, parseFloat(i.cashbackPromo) || 0));
+        const pctLinea = Math.max(pctNivel, promo);
+        const montoLinea = baseLinea * pctLinea / 100;
+        monto += montoLinea;
+        lineas.push({ id: i.id, nombre: i.nombre || '', pct: pctLinea, monto: Math.round(montoLinea * 100) / 100 });
+    }
+    return {
+        porcentajeNivel: pctNivel,
+        nivel,
+        monto: Math.round(monto * 100) / 100,
+        lineas
+    };
+}
+cargarConfigPrecios(); // precarga inicial (no bloquea el arranque)
+
 /* ========== VARIABLES DE ENTORNO ========== */
 const STRIPE_SECRET_KEY = (process.env.STRIPE_SECRET_KEY || '').trim();
 const STRIPE_WEBHOOK_SECRET = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
@@ -1122,7 +1237,9 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             precioReal: precioReal,
             costoEnvio: parseFloat(prod.costoEnvio) || 0,
             proveedor: prod.proveedor || 'Bonü',
-            precioProveedor: parseFloat(prod.precioProveedor) || precioReal
+            precioProveedor: parseFloat(prod.precioProveedor) || precioReal,
+            /* SAGA 4: cashback promo publicado para este producto (7,8,10,12,15,18,20) si existe */
+            cashbackPromo: Math.min(CASHBACK_MAX_PRODUCTO, parseFloat(prod.cashbackPromo) || 0)
         });
         
         subtotal += precioReal * cantidad;
@@ -1283,7 +1400,11 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
     
     if (data.userId) {
         const userRef = firestore.collection('clientes').doc(data.userId);
-        const cashbackGanado = data.total * 0.05;
+        /* SAGA 4: cashback por niveles (5% base · 10% >$45,000 con 6 pzas c/u · 15% >$60,000)
+           más las promos por producto publicadas (cashbackPromo) cuando son mayores */
+        const cashbackOrden = calcularCashbackOrden(data.validatedItems, data.total);
+        const cashbackGanado = cashbackOrden.monto;
+        console.log(`💰 Cashback nivel ${cashbackOrden.porcentajeNivel}% (${cashbackOrden.nivel}): $${cashbackGanado} de $${data.total}`);
         
         batch.update(userRef, {
             cashbackBalance: admin.firestore.FieldValue.increment(
@@ -1291,6 +1412,9 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
             ),
             cashbackHistory: admin.firestore.FieldValue.arrayUnion({
                 amount: cashbackGanado,
+                porcentaje: cashbackOrden.porcentajeNivel,
+                nivel: cashbackOrden.nivel,
+                detalle: cashbackOrden.lineas,
                 orderId,
                 date: new Date().toISOString(),
                 type: 'earned'
@@ -1520,7 +1644,17 @@ app.get('/api/config', (req, res) => res.json({
     stripePublicKey: process.env.STRIPE_PUBLIC_KEY || null,
     mercadoPagoPublicKey: process.env.MERCADO_PAGO_PUBLIC_KEY || null,
     paypalClientId: process.env.PAYPAL_CLIENT_ID || null,
-    paypalMode: PAYPAL_MODE
+    paypalMode: PAYPAL_MODE,
+    /* SAGA 4: reglas públicas de cashback para que el frontend las muestre */
+    cashbackReglas: {
+        base: CASHBACK_BASE,
+        niveles: [
+            { pct: 10, totalMinimo: UMBRAL_CASHBACK_10, piezasMinimasPorProducto: QTY_MIN_CASHBACK_10 },
+            { pct: 15, totalMinimo: UMBRAL_CASHBACK_15 }
+        ],
+        maxProducto: CASHBACK_MAX_PRODUCTO,
+        listaPromos: LISTA_CASHBACK
+    }
 }));
 
 app.post('/api/verify-stock', async (req, res) => {
@@ -3586,15 +3720,147 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
         }
         if (!nombre) nombre = 'Producto AliExpress ' + productId;
 
+        // 10) SAGA 4: precio de venta sugerido automático (margen + cashback configurados)
+        await cargarConfigPrecios();
+        const sugerido = calcularPrecioVenta({ costo: precio, margen: configPrecios.margenDefault, cashback: configPrecios.cashbackDefault });
+        const tablaMargenes = tablaPreciosPorMargen({ costo: precio, cashback: configPrecios.cashbackDefault });
+
         res.json({
             success: true,
-            data: { id: productId, nombre, precio, moneda, imagenes, descripcion, stock, variantes }
+            data: { id: productId, nombre, precio, moneda, imagenes, descripcion, stock, variantes },
+            preciosSugeridos: {
+                margenUsado: configPrecios.margenDefault,
+                cashbackUsado: configPrecios.cashbackDefault,
+                descMayoreo6: configPrecios.descMayoreo6,
+                precioUnitario: sugerido.precioFinal,
+                precio6: sugerido.precio6,
+                gananciaRealPorPieza: sugerido.gananciaRealPorPieza,
+                tablaMargenes
+            }
         });
     } catch (error) {
         console.error('❌ Error AliExpress:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
+
+/* ============================================================
+   ========== SAGA 4 · RUTAS DE PRECIOS AUTOMÁTICOS ============
+   ============================================================ */
+
+// Configuración de precios (margen por defecto, cashback por defecto, desc. mayoreo)
+app.get('/api/admin/precios/config', verificarAdmin, async (req, res) => {
+    await cargarConfigPrecios();
+    res.json({
+        success: true,
+        config: { ...configPrecios },
+        listaMargenes: LISTA_MARGENES,
+        listaCashback: LISTA_CASHBACK,
+        reglas: {
+            cashbackBase: CASHBACK_BASE,
+            umbral10: UMBRAL_CASHBACK_10,
+            piezasMin10: QTY_MIN_CASHBACK_10,
+            umbral15: UMBRAL_CASHBACK_15,
+            maxProducto: CASHBACK_MAX_PRODUCTO
+        }
+    });
+});
+
+app.put('/api/admin/precios/config', verificarAdmin, async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    const { margenDefault, cashbackDefault, descMayoreo6 } = req.body || {};
+    await cargarConfigPrecios();
+    if (margenDefault !== undefined && !LISTA_MARGENES.includes(Number(margenDefault)))
+        return res.status(400).json({ success: false, error: `margenDefault debe ser uno de: ${LISTA_MARGENES.join(', ')}` });
+    if (cashbackDefault !== undefined && !LISTA_CASHBACK.includes(Number(cashbackDefault)))
+        return res.status(400).json({ success: false, error: `cashbackDefault debe ser uno de: ${LISTA_CASHBACK.join(', ')}` });
+    if (descMayoreo6 !== undefined) {
+        const d = Number(descMayoreo6);
+        if (!Number.isFinite(d) || d < 0 || d > 50) return res.status(400).json({ success: false, error: 'descMayoreo6 debe estar entre 0 y 50' });
+    }
+    const nueva = {
+        margenDefault: margenDefault !== undefined ? Number(margenDefault) : configPrecios.margenDefault,
+        cashbackDefault: cashbackDefault !== undefined ? Number(cashbackDefault) : configPrecios.cashbackDefault,
+        descMayoreo6: descMayoreo6 !== undefined ? Number(descMayoreo6) : configPrecios.descMayoreo6
+    };
+    try {
+        await firestore.collection('config').doc('precios').set(nueva, { merge: true });
+        configPrecios = nueva;
+        console.log(`💰 Config de precios actualizada: margen ${nueva.margenDefault}% · cashback ${nueva.cashbackDefault}% · mayoreo ${nueva.descMayoreo6}%`);
+        res.json({ success: true, config: nueva });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Calculadora: costo + margen + cashback → precio de venta sugerido (con tabla comparativa)
+app.post('/api/admin/precios/calcular', verificarAdmin, async (req, res) => {
+    await cargarConfigPrecios();
+    const { costo, envio = 0, margen, cashback, descMayoreo6, conTabla = true } = req.body || {};
+    const c = parseFloat(costo);
+    if (!Number.isFinite(c) || c <= 0) return res.status(400).json({ success: false, error: 'Envía "costo" mayor a 0' });
+    const resultado = calcularPrecioVenta({
+        costo: c,
+        envio: parseFloat(envio) || 0,
+        margen: margen !== undefined ? margen : configPrecios.margenDefault,
+        cashback: cashback !== undefined ? cashback : configPrecios.cashbackDefault,
+        descMayoreo6: descMayoreo6 !== undefined ? descMayoreo6 : null
+    });
+    res.json({
+        success: true,
+        calculo: resultado,
+        tabla: conTabla ? tablaPreciosPorMargen({ costo: c, envio: parseFloat(envio) || 0, cashback: resultado.cashback, descMayoreo6: resultado.descMayoreo6 }) : undefined
+    });
+});
+
+// Recálculo masivo: aplica el margen a los precios de venta de productos existentes
+// (usa el campo precioProveedor de cada producto como costo)
+app.post('/api/admin/precios/aplicar-masivo', verificarAdmin, async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    const { ids, margen, cashback, descMayoreo6 } = req.body || {};
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ success: false, error: 'Envía "ids": [lista de ids de productos]' });
+    await cargarConfigPrecios();
+    const m = margen !== undefined ? Number(margen) : configPrecios.margenDefault;
+    if (!LISTA_MARGENES.includes(m)) return res.status(400).json({ success: false, error: `margen debe ser uno de: ${LISTA_MARGENES.join(', ')}` });
+    const cb = cashback !== undefined ? Number(cashback) : configPrecios.cashbackDefault;
+    if (!LISTA_CASHBACK.includes(cb)) return res.status(400).json({ success: false, error: `cashback debe ser uno de: ${LISTA_CASHBACK.join(', ')}` });
+    const resultados = [];
+    for (const id of ids.slice(0, 200)) {
+        try {
+            const ref = firestore.collection('productos').doc(String(id));
+            const docProd = await ref.get();
+            if (!docProd.exists) { resultados.push({ id, ok: false, error: 'No existe' }); continue; }
+            const prod = docProd.data();
+            const costo = parseFloat(prod.precioProveedor);
+            if (!Number.isFinite(costo) || costo <= 0) { resultados.push({ id, ok: false, error: 'Sin precioProveedor válido' }); continue; }
+            const r = calcularPrecioVenta({ costo, margen: m, cashback: cb, descMayoreo6: descMayoreo6 !== undefined ? descMayoreo6 : null });
+            await ref.update({
+                precioFinal: r.precioFinal,
+                precio6: r.precio6,
+                margen: m,
+                cashbackPromo: cb,
+                precioCalculado: true,
+                fechaRecalculo: new Date().toISOString()
+            });
+            resultados.push({ id, ok: true, costo, precioFinal: r.precioFinal, precio6: r.precio6, gananciaRealPorPieza: r.gananciaRealPorPieza });
+        } catch (e) {
+            resultados.push({ id, ok: false, error: e.message });
+        }
+    }
+    const ok = resultados.filter(r => r.ok).length;
+    console.log(`💰 Recálculo masivo: ${ok}/${resultados.length} productos (margen ${m}% · cashback ${cb}%)`);
+    try {
+        await firestore.collection('auditoria').add({
+            fecha: new Date().toISOString(),
+            admin: req.user?.email || 'Sistema',
+            accion: 'Recálculo de precios',
+            detalle: `Margen ${m}% · cashback ${cb}% · ${ok} productos actualizados`,
+            ip: req.ip
+        });
+    } catch (_) { /* la auditoría no debe romper la respuesta */ }
+    res.json({ success: true, margen: m, cashback: cb, actualizados: ok, fallidos: resultados.length - ok, resultados });
+});
+
 /* ========== EMAIL DE CAMPAÑAS (consumido por el panel admin del frontend) ========== */
 // FIX: este endpoint no existía y el botón "enviar campaña" del frontend siempre fallaba con 404.
 app.post('/api/admin/send-email', verificarAdmin, async (req, res) => {
