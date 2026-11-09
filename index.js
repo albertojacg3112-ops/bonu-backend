@@ -10,6 +10,7 @@ const nodemailer = require('nodemailer');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
+const https = require('https');
 const socketIo = require('socket.io');
 
 const app = express();
@@ -1624,10 +1625,127 @@ app.get('/health', (req, res) => res.json({
     timestamp: Date.now() 
 }));
 
+/* ========== [CORREO BONUGIFT 2026-11-09] Envío del correo del código ========== */
+const BONUGIFT_IMG_CORREO = 'https://i.ibb.co/wZXNvvXy/bonugift-1000-correo.jpg';
+const BONUGIFT_SITIO = 'https://xn--bon-joa.com';
+const BONUGIFT_PROMO_FIN = '15 de diciembre de 2026';
+
+function correoBonuGiftHTMLServer(email, codigo, montoTxt, nombre) {
+    const saludo = nombre ? 'Hola ' + sanitize(nombre) + ' \uD83D\uDC4B' : '\u00A1Hola! \uD83D\uDC4B';
+    return `<div style="margin:0;padding:24px 8px;background:#f5f5f4;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:2px solid #facc15;">
+    <tr><td style="background:#0a0a0a;padding:18px 24px;text-align:center;"><span style="color:#facc15;font-size:30px;font-weight:800;letter-spacing:1px;">bon&uuml;</span><span style="color:#ffffff;font-size:13px;">&nbsp;&nbsp;|&nbsp;&nbsp;bon&uuml;.com — el mercado que te paga</span></td></tr>
+    <tr><td style="padding:24px 24px 6px 24px;text-align:center;"><p style="margin:0;color:#111827;font-size:16px;">${saludo}</p><p style="margin:8px 0 0 0;color:#111827;font-size:17px;font-weight:800;line-height:1.5;">&#127881; FELICIDADES, CUMPLISTE NUESTRA DIN&Aacute;MICA<br>Y ESO TE HACE GANADOR DE:</p></td></tr>
+    <tr><td style="padding:16px 24px 4px 24px;text-align:center;"><img src="${BONUGIFT_IMG_CORREO}" alt="Bon&uuml;Gift ${montoTxt}" width="560" style="width:100%;max-width:560px;height:auto;border-radius:14px;border:2px solid #facc15;display:block;"></td></tr>
+    <tr><td style="padding:14px 24px 4px 24px;text-align:center;"><p style="margin:0;color:#374151;font-size:14px;font-weight:700;">TU C&Oacute;DIGO DE ACTIVACI&Oacute;N — FREE CASH ${montoTxt}</p>
+      <div style="margin:10px auto 0 auto;border:3px dashed #facc15;background:#fefce8;border-radius:14px;padding:12px 26px;display:inline-block;"><span style="color:#111827;font-size:26px;font-weight:800;letter-spacing:3px;">${sanitize(codigo)}</span></div>
+      <p style="margin:10px 0 0 0;color:#6b7280;font-size:12px;">Escr&iacute;belo tal cual en bon&uuml;.com (caja dorada debajo del buscador)</p></td></tr>
+    <tr><td style="padding:14px 28px;"><p style="margin:0;color:#111827;font-size:14px;font-weight:700;text-align:center;line-height:1.6;">BON&Uuml; TE ADELANTA TU AGUINALDO PARA QUE PAGUES PARTE DE TUS REGALOS NAVIDE&Ntilde;OS PARA TU FAMILIA, AMIGOS O CONOCIDOS.</p>
+      <p style="margin:8px 0 0 0;color:#a16207;font-size:15px;font-weight:800;text-align:center;">&iexcl;DISFRUTA TU BON&Uuml;GIFT Y TU FREE CASH EN BON&Uuml;.COM!</p></td></tr>
+    <tr><td style="padding:6px 24px 16px 24px;text-align:center;"><a href="${BONUGIFT_SITIO}" style="display:inline-block;background:#facc15;color:#111827;font-size:15px;font-weight:800;padding:13px 30px;border-radius:999px;text-decoration:none;">&#128722; ACTIVAR Y COMPRAR EN BON&Uuml;.COM</a></td></tr>
+    <tr><td style="padding:0 28px 18px 28px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:12px;"><tr><td style="padding:14px 16px;">
+      <p style="margin:0 0 6px 0;color:#111827;font-size:13px;font-weight:800;">&iquest;C&oacute;mo uso mi Bon&uuml;Gift? (3 pasos)</p>
+      <p style="margin:0;color:#4b5563;font-size:12.5px;line-height:1.7;">1&#65039;&#8419; Reg&iacute;strate en bon&uuml;.com y activa tu c&oacute;digo en la <b>caja dorada</b> debajo del buscador: tu Free Cash se suma a tu saldo al instante.<br>2&#65039;&#8419; Elige productos con el <b>&iacute;cono del regalo dorado &#127873;</b> y agr&eacute;alos a tu carrito.<br>3&#65039;&#8419; En el checkout paga <b>10/15/20/25%</b> con tu saldo Bon&uuml;Gift y el resto con tu tarjeta. &iexcl;Y ganas 5% de cashback en tu compra!</p>
+    </td></tr></table></td></tr>
+    <tr><td style="padding:0 28px 22px 28px;"><p style="margin:0;color:#6b7280;font-size:11px;line-height:1.7;text-align:center;background:#f3f4f6;border-radius:10px;padding:10px 12px;">T&eacute;rminos: tu c&oacute;digo es <b>v&aacute;lido solo 1 vez</b>, <b>no es transferible</b> ni acumulable con otras promociones u ofertas. Aplica &uacute;nicamente en productos marcados con el <b>&iacute;cono del regalo dorado &#127873;</b>. Vigencia: <b>15 d&iacute;as naturales a partir de la activaci&oacute;n</b> de tu c&oacute;digo. Promoci&oacute;n vigente hasta el <b>${BONUGIFT_PROMO_FIN}</b>. Cashback y saldo Bon&uuml;Gift aplican seg&uacute;n la pol&iacute;tica de bon&uuml;.com.</p></td></tr>
+    <tr><td style="background:#0a0a0a;padding:14px 24px;text-align:center;"><p style="margin:0;color:#facc15;font-size:12px;font-weight:700;">bon&uuml; te adelanta tu aguinaldo &#127876;</p><p style="margin:4px 0 0 0;color:#9ca3af;font-size:11px;">bon&uuml;.com · Puerto Vallarta, Jal. · Env&iacute;os a todo M&eacute;xico</p></td></tr>
+  </table>
+</div>`;
+}
+
+const giftEmailLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
+    message: { success: false, error: 'Demasiados correos. Intenta más tarde.' } });
+
+/* ========== 📲 WHATSAPP (CallMeBot) [v3] — avisos a Alberto ========== */
+const WA_PHONE = (process.env.WHATSAPP_PHONE || '526444374228').replace(/\D/g, '');
+const WA_APIKEY = process.env.WHATSAPP_APIKEY || '';
+const waConfigurado = !!(WA_PHONE && WA_APIKEY);
+const waLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false,
+    message: { success: false, error: 'Demasiados avisos. Intenta más tarde.' } });
+function waSanitizar(s, n){ return String(s || '').replace(/[\r\n]+/g, ' ').replace(/[*_~`]/g, '').trim().substring(0, n || 80); }
+function waEnviarCallMeBot(msg){
+    return new Promise((resolve) => {
+        if(!waConfigurado) return resolve({ ok: false, error: 'WhatsApp no configurado (WHATSAPP_PHONE / WHATSAPP_APIKEY en Render)' });
+        const url = 'https://api.callmebot.com/whatsapp.php?phone=' + encodeURIComponent('+' + WA_PHONE) + '&text=' + encodeURIComponent(String(msg).substring(0, 1400)) + '&apikey=' + encodeURIComponent(WA_APIKEY);
+        const req = https.get(url, (r) => { r.resume(); resolve({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode }); });
+        req.on('error', (e) => resolve({ ok: false, error: e.message }));
+        req.setTimeout(12000, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+    });
+}
+
+app.post('/api/send-gift-email', giftEmailLimiter, verificarAdmin, async (req, res) => {
+    try {
+        if (!emailConfigurado || !emailTransporter) {
+            return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER/EMAIL_PASS)' });
+        }
+        const to = String(req.body.to || '').trim().toLowerCase();
+        const codigo = String(req.body.codigo || '').trim().toUpperCase();
+        const monto = Number(req.body.monto) || 1000;
+        const nombre = String(req.body.nombre || '').trim().substring(0, 60);
+        if (!isValidEmail(to)) return res.status(400).json({ success: false, error: 'Correo del cliente inválido' });
+        if (!codigo || codigo.length < 4 || codigo.length > 24) return res.status(400).json({ success: false, error: 'Código inválido' });
+        if (!(monto > 0) || monto > 100000) return res.status(400).json({ success: false, error: 'Monto inválido' });
+        const montoTxt = formatCurrency(monto);
+        const html = correoBonuGiftHTMLServer(to, codigo, montoTxt, nombre);
+        await Promise.race([
+            emailTransporter.sendMail({
+                from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
+                to: to,
+                subject: `🎁 Tu BonüGift de ${montoTxt} — ¡Felicidades, ganaste tu Free Cash!`,
+                html: html
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 15000))
+        ]);
+        console.log(`📧 BonüGift ${codigo} enviada a ${to} (${montoTxt})`);
+        try {
+            if (firestore) {
+                await firestore.collection('auditoria').add({
+                    fecha: new Date().toISOString(), admin: (req.user && req.user.email) || 'Backend',
+                    accion: 'Correo BonüGift 📧', detalle: 'Enviado a ' + to + ' · código ' + codigo + ' (' + montoTxt + ')', ip: 'backend'
+                });
+            }
+        } catch (e) { console.warn('No se pudo registrar en auditoría:', e.message); }
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ Error send-gift-email:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/* Aviso admin (mensaje libre) — protegido con token de administrador */
+app.post('/api/whatsapp', waLimiter, verificarAdmin, async (req, res) => {
+    try {
+        const msg = waSanitizar(req.body && req.body.msg, 1400);
+        if(!msg) return res.status(400).json({ success: false, error: 'Falta el mensaje' });
+        const r = await waEnviarCallMeBot(msg);
+        if(!r.ok) return res.status(502).json({ success: false, configurado: waConfigurado, error: r.error || ('CallMeBot respondió ' + r.status) });
+        res.json({ success: true, via: 'callmebot' });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+/* Aviso público de registro/dinámica (rate-limited, mensaje con plantilla fija) */
+app.post('/api/notify-register', waLimiter, async (req, res) => {
+    try {
+        if(!waConfigurado) return res.json({ success: false, configurado: false, error: 'WhatsApp no configurado en el servidor' });
+        const b = req.body || {};
+        const pasos = Math.max(0, Math.min(5, parseInt(b.pasos, 10) || 0));
+        let msg;
+        if(b.dinamica){
+            msg = '🎄 DINÁMICA COMPLETA EN BONÜ.COM\n\n👤 ' + waSanitizar(b.nombre, 60) + '\n📧 ' + waSanitizar(b.email, 60) + '\n✅ 5 likes ❤️ + pasos de redes\n👉 Panel → Promoción: asigna su BonüGift $1,000';
+        } else {
+            msg = '🔔 NUEVO REGISTRO EN BONÜ.COM\n\n👤 ' + waSanitizar(b.nombre, 60) + '\n📧 ' + waSanitizar(b.email, 60) + '\n📱 ' + waSanitizar(b.telefono, 30) + '\n🏷️ ' + (b.tipo === 'vendedor' ? 'Vendedor' : 'Cliente') + '\n🎯 Dinámica: ' + pasos + '/5 pasos declarados\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
+        }
+        const r = await waEnviarCallMeBot(msg);
+        if(!r.ok) return res.status(502).json({ success: false, error: r.error || ('CallMeBot respondió ' + r.status) });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 app.get('/api/status', (req, res) => res.json({
     success: true,
     firestore: !!firestore,
     email: emailConfigurado,
+    whatsapp: waConfigurado,
     stripe: !!stripe,
     mercadoPago: !!MERCADO_PAGO_ACCESS_TOKEN,
     bonupay: !!(BONUPAY_ACCESS_TOKEN || MERCADO_PAGO_ACCESS_TOKEN),
