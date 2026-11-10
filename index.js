@@ -282,7 +282,6 @@ async function sendConfirmationEmail(orderData) {
                 <div class="section-title">💰 Resumen de Pago</div>
                 <div class="row"><span class="row-label">Subtotal:</span><span class="row-value">${formatCurrency(subtotal)}</span></div>
                 ${envio > 0 ? `<div class="row"><span class="row-label">Envío:</span><span class="row-value">${formatCurrency(envio)}</span></div>` : `<div class="row"><span class="row-label">Envío:</span><span class="row-value" style="color:#10b981;">Gratis</span></div>`}
-                ${iva > 0 ? `<div class="row"><span class="row-label">IVA (16%):</span><span class="row-value">${formatCurrency(iva)}</span></div>` : ''}
                 ${descuento > 0 ? `<div class="row"><span class="row-label">Descuento:</span><span class="row-value" style="color:#ef4444;">-${formatCurrency(descuento)}</span></div>` : ''}
                 ${cashbackUsado > 0 ? `<div class="row"><span class="row-label">Cashback usado:</span><span class="row-value" style="color:#3b82f6;">-${formatCurrency(cashbackUsado)}</span></div>` : ''}
                 ${safeCupon ? `<div class="row"><span class="row-label">Cupón aplicado:</span><span class="row-value" style="color:#8b5cf6;">${safeCupon}</span></div>` : ''}
@@ -1291,8 +1290,11 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     }
     
     const envio = subtotal >= 999 ? 0 : validatedItems.reduce((s, i) => s + (i.costoEnvio || 0), 0);
-    const iva = (subtotal - descuento) * 0.16;
-    const total = Math.round((subtotal - descuento - cashbackUsar + envio + iva) * 100) / 100;
+    /* [IVA INCLUIDO 2026-11-10] El precio publicado YA trae el IVA 16% dentro.
+       Ya NO se suma al total: el cliente paga lo publicado + envío.
+       Solo se registra el IVA contenido (16/116) para SAT / Caja BonuPay. */
+    const iva = Math.round(((subtotal - descuento) * 16 / 116) * 100) / 100;
+    const total = Math.round((subtotal - descuento - cashbackUsar + envio) * 100) / 100;
     
     if (total <= 0) {
         return res.status(400).json({ success: false, error: 'Total inválido' });
@@ -2836,7 +2838,7 @@ app.post('/api/admin/reportes/generar', verificarAdmin, async (req, res) => {
                 break;
             }
             case 'impuestos': {
-                const totalIva = pedidos.reduce((s, o) => s + ((o.total || 0) * 0.16), 0);
+                const totalIva = pedidos.reduce((s, o) => s + ((o.total || 0) * 16 / 116), 0);
                 resultado = {
                     totalVentas: pedidos.reduce((s, o) => s + (o.total || 0), 0),
                     totalIVA: totalIva,
