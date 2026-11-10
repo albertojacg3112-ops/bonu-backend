@@ -1999,11 +1999,55 @@ async function getCJToken() {
     return cjTokenPromise;
 }
 
+/* [IMPORT v10] Tasa USD→MXN en vivo (caché 12h). Override: variable USD_MXN en Render. */
+let tasaUSDCache = { valor: 0, fecha: 0 };
+async function obtenerTasaUSD() {
+    const override = parseFloat(process.env.USD_MXN);
+    if (override > 0) return override;
+    if (tasaUSDCache.valor > 0 && Date.now() - tasaUSDCache.fecha < 12 * 3600 * 1000) return tasaUSDCache.valor;
+    try {
+        const r = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(8000) });
+        const d = await r.json();
+        const v = parseFloat(d?.rates?.MXN);
+        if (v > 0) { tasaUSDCache = { valor: v, fecha: Date.now() }; return v; }
+    } catch (_) {}
+    return 0;
+}
+
+/* [IMPORT v10] Mapeo completo de un producto CJ (detalle de /product/query) */
+function mapearProductoCJ(detalle, skuBase) {
+    const imgs = Array.isArray(detalle.productImage) ? detalle.productImage.filter(Boolean)
+        : (detalle.productImage ? [detalle.productImage] : []);
+    for (const extra of (detalle.productKeyImages || [])) if (extra && !imgs.includes(extra)) imgs.push(extra);
+    const variantes = (Array.isArray(detalle.variantList) ? detalle.variantList : []).map(v => ({
+        vid: v.vid || '',
+        nombre: v.skuName || v.variantKey || v.skuCode || 'Variante',
+        precioUSD: parseFloat(v.variantSellPrice ?? v.sellPrice ?? detalle.sellPrice) || 0,
+        stock: parseInt(v.inventory ?? 0, 10) || 0,
+        imagen: v.variantImage || ''
+    }));
+    let precioUSD = parseFloat(detalle.sellingPrice) || 0;
+    const conStock = variantes.filter(v => v.stock > 0 && v.precioUSD > 0);
+    const fuente = conStock.length ? conStock : variantes.filter(v => v.precioUSD > 0);
+    if (fuente.length) precioUSD = Math.min(...fuente.map(v => v.precioUSD));
+    const stockTotal = variantes.length ? variantes.reduce((a, v) => a + v.stock, 0) : (parseInt(detalle.inventory, 10) || 0);
+    return {
+        name: detalle.productNameEn || detalle.productName || ('Producto ' + skuBase),
+        descripcion: detalle.productDescription || '',
+        precioUSD,
+        costUSD: parseFloat(detalle.costPrice) || precioUSD,
+        imagenes: imgs,
+        sku: detalle.productSku || skuBase,
+        variantes,
+        stockTotal
+    };
+}
+
 app.get('/api/cj/product/:sku', verificarAdmin, async (req, res) => {
     const { sku } = req.params;
     
     if (!CJ_API_KEY) {
-        return res.status(500).json({ success: false, error: 'CJ_API_KEY no configurada' });
+        return res.status(500).json({ success: false, error: 'CJ_API_KEY no configurada. La sacas en CJ → My CJ → API → API Key y la pones como variable CJ_API_KEY en Render.' });
     }
     
     try {
@@ -2022,16 +2066,80 @@ app.get('/api/cj/product/:sku', verificarAdmin, async (req, res) => {
         }
         
         const product = searchData.data.list[0];
+        const pid = product.pid || product.productId || product.pId || '';
+        
+        /* [IMPORT v10] Detalle completo: galería completa + variantes + descripción larga */
+        let detalle = product;
+        if (pid) {
+            try {
+                const detRes = await fetch(`${CJ_API_URL}/product/query?pid=${encodeURIComponent(pid)}`, { headers: { 'CJ-Access-Token': token } });
+                const detData = await detRes.json();
+                if (detData.code === 200 && detData.data) detalle = { ...product, ...detData.data };
+            } catch (_) { /* si el detalle falla seguimos con el listado */ }
+        }
+        const m = mapearProductoCJ(detalle, sku);
+        
+        /* [IMPORT v10] Flete a México (endpoint oficial freightCalculate con vid) */
+        let envio = null, envioCanales = [];
+        const vidElegido = (detalle.variantList || []).find(v => (parseInt(v.inventory, 10) || 0) > 0)?.vid
+            || (detalle.variantList || [])[0]?.vid || '';
+        if (vidElegido) {
+            const intentos = [
+                ['https://developers.cjdropshipping.com/api2.0/v2.0/logistics/freightCalculate', { startCountryCode: 'CN', endCountryCode: 'MX', products: [{ quantity: 1, vid: vidElegido }] }],
+                [`${CJ_API_URL}/logistics/freightCalculate`, { startCountryCode: 'CN', endCountryCode: 'MX', quantity: 1, currency: 'USD', vidList: [vidElegido] }]
+            ];
+            for (const [url, body] of intentos) {
+                try {
+                    const fr = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'CJ-Access-Token': token }, body: JSON.stringify(body) });
+                    const fd = await fr.json();
+                    const lista = Array.isArray(fd.data) ? fd.data : (Array.isArray(fd.data?.list) ? fd.data.list : []);
+                    if ((fd.code === 200 || fd.success) && lista.length) {
+                        envioCanales = lista.map(c => ({ canal: c.logisticName || 'CJ', usd: parseFloat(c.logisticPrice) || 0, dias: String(c.logisticAging || '') })).filter(c => c.usd > 0);
+                        if (envioCanales.length) break;
+                    }
+                } catch (_) { continue; }
+            }
+            envioCanales.sort((a, b) => a.usd - b.usd);
+            if (envioCanales.length) envio = envioCanales[0];
+        }
+        
+        /* [IMPORT v10] Conversión USD→MXN con tasa en vivo */
+        const tasa = await obtenerTasaUSD();
+        const precioMXN = tasa > 0 ? Math.round(m.precioUSD * tasa * 100) / 100 : null;
+        const envioMXN = envio && tasa > 0 ? Math.round(envio.usd * tasa * 100) / 100 : null;
+        
+        /* SAGA 4: precio de venta sugerido (mismo cálculo que AliExpress) */
+        await cargarConfigPrecios();
+        const costoBase = precioMXN !== null ? precioMXN : m.precioUSD;
+        const sugerido = calcularPrecioVenta({ costo: costoBase, margen: configPrecios.margenDefault, cashback: configPrecios.cashbackDefault });
+        const tablaMargenes = tablaPreciosPorMargen({ costo: costoBase, cashback: configPrecios.cashbackDefault });
         
         res.json({ 
             success: true, 
             product: {
-                name: product.productNameEn || product.productName || `Producto ${sku}`,
-                description: product.productDescription || '',
-                price: parseFloat(product.sellingPrice) || 0,
-                cost: parseFloat(product.costPrice) || 0,
-                images: product.productImage ? [product.productImage] : [],
-                sku: product.productSku || sku
+                name: m.name,
+                description: m.descripcion,
+                price: costoBase,
+                precioUSD: m.precioUSD,
+                moneda: precioMXN !== null ? 'MXN' : 'USD',
+                tasaCambio: tasa || null,
+                cost: m.costUSD,
+                images: m.imagenes,
+                sku: m.sku,
+                pid,
+                stock: m.stockTotal,
+                variantes: m.variantes.map(v => ({ ...v, precio: tasa > 0 ? Math.round(v.precioUSD * tasa * 100) / 100 : v.precioUSD })),
+                envio: envioMXN !== null ? { mxn: envioMXN, usd: envio.usd, canal: envio.canal, dias: envio.dias } : null,
+                envioCanales: envioCanales.slice(0, 6).map(c => ({ canal: c.canal, usd: c.usd, mxn: tasa > 0 ? Math.round(c.usd * tasa * 100) / 100 : null, dias: c.dias }))
+            },
+            preciosSugeridos: {
+                margenUsado: configPrecios.margenDefault,
+                cashbackUsado: configPrecios.cashbackDefault,
+                descMayoreo6: configPrecios.descMayoreo6,
+                precioUnitario: sugerido.precioFinal,
+                precio6: sugerido.precio6,
+                gananciaRealPorPieza: sugerido.gananciaRealPorPieza,
+                tablaMargenes
             }
         });
     } catch (error) {
@@ -3942,6 +4050,49 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
         }
         if (!nombre) nombre = 'Producto AliExpress ' + productId;
 
+        /* [IMPORT v10] Descripción completa: si product.get no la trajo, intenta APIs dedicadas */
+        let descripcionFinal = descripcion || '';
+        if (String(descripcionFinal).replace(/<[^>]*>/g, '').trim().length < 40) {
+            for (const [metodoDesc, paramsDesc] of [
+                ['aliexpress.ds.product.desc.get', { product_id: productId }],
+                ['aliexpress.affiliate.productdescription.get', { product_id: productId, num_iid: productId }],
+                ['aliexpress.product.description.get', { product_id: productId, num_iid: productId }]
+            ]) {
+                try {
+                    const dDesc = await aeLlamar(metodoDesc, paramsDesc);
+                    const rDesc = dDesc[Object.keys(dDesc)[0]] || {};
+                    if (rDesc.error_response || rDesc.result === undefined) continue;
+                    const htmlDesc = buscar(rDesc, 'description') || buscar(rDesc, 'content') || '';
+                    if (typeof htmlDesc === 'string' && htmlDesc.length > 40) { descripcionFinal = htmlDesc; break; }
+                } catch (_) { continue; }
+            }
+        }
+        
+        /* [IMPORT v10] Costo de envío a México (mejor esfuerzo; si la app no lo permite → manual) */
+        let costoEnvioAE = null;
+        for (const [metodoEnv, paramsEnv] of [
+            ['aliexpress.recommend.recommendshippingcost.get', { product_id: productId, num_iids: productId, country_code: 'MX', ship_to_country: 'MX', currency: 'MXN' }],
+            ['aliexpress.affiliate.recommendshippingcost.get', { product_id: productId, num_iids: productId, country_code: 'MX', currency: 'MXN' }]
+        ]) {
+            try {
+                const dEnv = await aeLlamar(metodoEnv, paramsEnv);
+                const rEnv = dEnv[Object.keys(dEnv)[0]] || {};
+                if (rEnv.error_response) continue;
+                const posibles = [];
+                const colecta = (o, prof = 0) => {
+                    if (!o || typeof o !== 'object' || prof > 6) return;
+                    for (const k of Object.keys(o)) {
+                        if (['shipping_cost', 'freight', 'logistic_amount', 'price'].includes(k)) {
+                            const v = parseFloat(o[k]);
+                            if (!Number.isNaN(v) && v >= 0) posibles.push(v);
+                        } else if (o[k] && typeof o[k] === 'object') colecta(o[k], prof + 1);
+                    }
+                };
+                colecta(rEnv);
+                if (posibles.length) { costoEnvioAE = Math.min(...posibles); break; }
+            } catch (_) { continue; }
+        }
+        
         // 10) SAGA 4: precio de venta sugerido automático (margen + cashback configurados)
         await cargarConfigPrecios();
         const sugerido = calcularPrecioVenta({ costo: precio, margen: configPrecios.margenDefault, cashback: configPrecios.cashbackDefault });
@@ -3949,7 +4100,7 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
 
         res.json({
             success: true,
-            data: { id: productId, nombre, precio, moneda, imagenes, descripcion, stock, variantes },
+            data: { id: productId, nombre, precio, moneda, imagenes, descripcion: descripcionFinal, stock, variantes, costoEnvio: costoEnvioAE, skuUrl: 'https://es.aliexpress.com/item/' + productId + '.html' },
             preciosSugeridos: {
                 margenUsado: configPrecios.margenDefault,
                 cashbackUsado: configPrecios.cashbackDefault,
