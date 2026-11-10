@@ -1482,6 +1482,14 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
         console.error('emitNewOrder fallo:', err.message);
     }
     
+    /* 📲 Aviso WhatsApp: nueva venta */
+    try {
+        const itemsVenta = data.validatedItems || [];
+        const nPiezas = itemsVenta.reduce((a, it) => a + (Number(it.cantidad) || 1), 0);
+        const listaArt = itemsVenta.slice(0, 5).map(it => '• ' + waSanitizar(it.nombre || it.id, 42) + (Number(it.cantidad) > 1 ? ' x' + it.cantidad : '')).join('\n');
+        waEnviarCallMeBot('💰 ¡VENTA EN BONÜ.COM! 🎉\n\n🧾 Orden: ' + orderId + '\n💳 Pago: ' + paymentMethod + '\n📦 ' + nPiezas + ' pza(s):\n' + listaArt + (itemsVenta.length > 5 ? '\n• +' + (itemsVenta.length - 5) + ' más' : '') + '\n💵 Total: $' + Number(data.total).toFixed(2) + ' MXN\n👤 ' + waSanitizar(data.customerName || 'Cliente', 60) + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+    } catch (errW) { console.warn('Aviso WhatsApp venta fallo:', errW.message); }
+
     console.log(`✅ Orden creada: ${orderId} - ${paymentMethod} - $${data.total} MXN`);
     
     return { orderId };
@@ -1656,21 +1664,45 @@ function correoBonuGiftHTMLServer(email, codigo, montoTxt, nombre) {
 const giftEmailLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
     message: { success: false, error: 'Demasiados correos. Intenta más tarde.' } });
 
-/* ========== 📲 WHATSAPP (CallMeBot) [v3] — avisos a Alberto ========== */
-const WA_PHONE = (process.env.WHATSAPP_PHONE || '526444374228').replace(/\D/g, '');
-const WA_APIKEY = process.env.WHATSAPP_APIKEY || '';
-const waConfigurado = !!(WA_PHONE && WA_APIKEY);
+/* ========== 📲 WHATSAPP (CallMeBot) [v4] — avisos a Alberto (2 números) ========== */
+/* CallMeBot México: el número activado va con prefijo 521 (ej. 5216444374228 = +52 1 644 437 4228).
+   Opcional en Render → Variables de entorno:
+     WHATSAPP_TARGETS  = 5216444374228:apikey1,5213222700732:apikey2   (sobrescribe todo)
+     WHATSAPP_APIKEY   = apikey del 644   ·   WHATSAPP_APIKEY2 = apikey del 322
+   Sin variables: usa el default de abajo (el 644 ya quedó activado con su apikey).
+   Para el 322 270 0732: envía "I allow callmebot to send me messages" al +34 644 51 95 23
+   desde ese WhatsApp, copia la apikey que te llegue y ponla en WHATSAPP_APIKEY2. */
+function waParseTargets(){
+    const raw = (process.env.WHATSAPP_TARGETS || '').trim();
+    if(raw){
+        return raw.split(',').map(p => { const [tel, key] = p.trim().split(':');
+            return { phone: (tel || '').replace(/\D/g, ''), apikey: (key || '').trim() }; })
+            .filter(t => t.phone && t.apikey);
+    }
+    const t1 = { phone: '5216444374228', apikey: (process.env.WHATSAPP_APIKEY || '4905091').trim() };
+    const t2 = { phone: '5213222700732', apikey: (process.env.WHATSAPP_APIKEY2 || '').trim() };
+    return [t1, t2].filter(t => t.phone && t.apikey);
+}
+const WA_TARGETS = waParseTargets();
+const waConfigurado = WA_TARGETS.length > 0;
 const waLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false,
     message: { success: false, error: 'Demasiados avisos. Intenta más tarde.' } });
 function waSanitizar(s, n){ return String(s || '').replace(/[\r\n]+/g, ' ').replace(/[*_~`]/g, '').trim().substring(0, n || 80); }
-function waEnviarCallMeBot(msg){
+function waEnviarUno(phone, apikey, msg){
     return new Promise((resolve) => {
-        if(!waConfigurado) return resolve({ ok: false, error: 'WhatsApp no configurado (WHATSAPP_PHONE / WHATSAPP_APIKEY en Render)' });
-        const url = 'https://api.callmebot.com/whatsapp.php?phone=' + encodeURIComponent('+' + WA_PHONE) + '&text=' + encodeURIComponent(String(msg).substring(0, 1400)) + '&apikey=' + encodeURIComponent(WA_APIKEY);
+        const url = 'https://api.callmebot.com/whatsapp.php?phone=' + encodeURIComponent('+' + phone) + '&text=' + encodeURIComponent(String(msg).substring(0, 1400)) + '&apikey=' + encodeURIComponent(apikey);
         const req = https.get(url, (r) => { r.resume(); resolve({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode }); });
         req.on('error', (e) => resolve({ ok: false, error: e.message }));
         req.setTimeout(12000, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
     });
+}
+/* Envía el aviso a TODOS los WhatsApp configurados (fan-out) */
+async function waEnviarCallMeBot(msg){
+    if(!waConfigurado) return { ok: false, enviados: 0, total: 0, error: 'WhatsApp sin apikey CallMeBot activa' };
+    const rs = await Promise.all(WA_TARGETS.map(t => waEnviarUno(t.phone, t.apikey, msg)));
+    const enviados = rs.filter(r => r.ok).length;
+    rs.forEach((r, i) => { if(!r.ok) console.warn('📲 WhatsApp falló a +' + WA_TARGETS[i].phone + ':', r.error || ('HTTP ' + r.status)); });
+    return { ok: enviados > 0, enviados, total: WA_TARGETS.length, detalles: rs };
 }
 
 app.post('/api/send-gift-email', giftEmailLimiter, verificarAdmin, async (req, res) => {
@@ -1697,6 +1729,8 @@ app.post('/api/send-gift-email', giftEmailLimiter, verificarAdmin, async (req, r
             new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 15000))
         ]);
         console.log(`📧 BonüGift ${codigo} enviada a ${to} (${montoTxt})`);
+        /* 📲 Aviso WhatsApp: entrega de tarjeta BonüGift */
+        waEnviarCallMeBot('🎁 BONÜGIFT ENTREGADA\n\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(to, 60) + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
         try {
             if (firestore) {
                 await firestore.collection('auditoria').add({
@@ -1746,6 +1780,7 @@ app.get('/api/status', (req, res) => res.json({
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
+    whatsappNums: WA_TARGETS.length,
     stripe: !!stripe,
     mercadoPago: !!MERCADO_PAGO_ACCESS_TOKEN,
     bonupay: !!(BONUPAY_ACCESS_TOKEN || MERCADO_PAGO_ACCESS_TOKEN),
@@ -2250,9 +2285,30 @@ app.post('/api/sunsky/import', verificarAdmin, async (req, res) => {
 });
 
 /* ========== TRACKING ========== */
+/* 📈 Monitor de tráfico (avisa por WhatsApp cuando sube de golpe) — v4 */
+const traficoEstado = { horaActual: '', conteo: 0, avisadoEn: '', previos: [] };
+function traficoRegistrarVisita(){
+    const hora = new Date().toISOString().substring(0, 13);
+    if(traficoEstado.horaActual !== hora){
+        traficoEstado.previos.push(traficoEstado.conteo);
+        if(traficoEstado.previos.length > 6) traficoEstado.previos.shift();
+        traficoEstado.horaActual = hora;
+        traficoEstado.conteo = 0;
+        traficoEstado.avisadoEn = '';
+    }
+    traficoEstado.conteo++;
+    try {
+        const previos = traficoEstado.previos.filter(c => c > 0);
+        const promedio = previos.length ? previos.reduce((a, b) => a + b, 0) / previos.length : 0;
+        if(waConfigurado && traficoEstado.conteo >= 30 && traficoEstado.conteo >= promedio * 2 && traficoEstado.avisadoEn !== traficoEstado.horaActual){
+            traficoEstado.avisadoEn = traficoEstado.horaActual;
+            waEnviarCallMeBot('📈 AUMENTO DE TRÁFICO EN BONÜ.COM\n\n👀 ' + traficoEstado.conteo + ' visitas en la última hora' + (promedio ? ' (promedio horas previas: ' + Math.round(promedio) + '/h)' : '') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        }
+    } catch (e) { /* nunca romper el tracking */ }
+}
 app.post('/api/tracking/visita', async (req, res) => {
     const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
-    
+    traficoRegistrarVisita();
     if (!firestore) return res.json({ success: true });
     
     try {
