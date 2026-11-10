@@ -120,6 +120,38 @@ function getOptimizedProductImages(product) {
         large: product.imagenes[0] ? getOptimizedImageUrl(product.imagenes[0], 800, 800) : null
     };
 }
+/* ========== [ENTREGA 2026-11-10] Correo de agradecimiento + fechas aproximadas ========== */
+/* Promesa de entrega: 7 a 20 días hábiles (fechas concretas calculadas desde la compra). */
+const ENTREGA_MIN_HABILES = 7;
+const ENTREGA_MAX_HABILES = 20;
+function sumarDiasHabiles(dias, desde = new Date()) {
+    /* Base en hora de México (UTC-6 fijo, sin horario de verano).
+       Se fija mediodía UTC para que la fecha es-MX nunca ruede un día. */
+    const d = new Date(desde.getTime() - 6 * 3600 * 1000);
+    d.setUTCHours(12, 0, 0, 0);
+    let agregados = 0;
+    while (agregados < dias) {
+        d.setUTCDate(d.getUTCDate() + 1);
+        const w = d.getUTCDay();
+        if (w !== 0 && w !== 6) agregados++; /* sábados y domingos no cuentan */
+    }
+    return d;
+}
+function fechaEntregaTxt(d) {
+    const s = d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+/* Referencias públicas de los proveedores (días hábiles; varían por aduana y temporada):
+   · AliExpress Standard a México: 7 a 30 (hasta 45 en temporada alta) — es.aliexpress.com
+   · CJ Dropshipping (CJPaket/CJPacket) a México: 12 a 25 — blog oficial CJ */
+function refsProveedorDe(items) {
+    const tiene = (p) => (items || []).some(it => String(it.proveedor || '').toLowerCase().includes(p));
+    const refs = [];
+    if (tiene('aliexpress')) refs.push('<b>AliExpress:</b> 7 a 30 días hábiles');
+    if (tiene('cj')) refs.push('<b>CJ Dropshipping:</b> 12 a 25 días hábiles');
+    return refs;
+}
+
 /* ========== NOTA DE COMPRA PROFESIONAL ========== */
 async function sendConfirmationEmail(orderData) {
     if (!emailConfigurado || !emailTransporter) return false;
@@ -167,6 +199,12 @@ async function sendConfirmationEmail(orderData) {
             </tr>
         `;
     }).join('');
+    
+    /* [ENTREGA 2026-11-10] fechas aproximadas de entrega para este pedido */
+    const baseEntrega = date ? new Date(date) : new Date();
+    const fMin = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MIN_HABILES, baseEntrega));
+    const fMax = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MAX_HABILES, baseEntrega));
+    const refsProv = refsProveedorDe(items);
     
     const empresa = {
         nombre: 'Bonü Marketplace',
@@ -299,6 +337,12 @@ async function sendConfirmationEmail(orderData) {
                 ${safeUsoCFDI ? `<div class="row"><span class="row-label">Uso CFDI:</span><span class="row-value">${safeUsoCFDI}</span></div>` : ''}
             </div>
             ` : ''}
+            <div style="background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:10px;padding:16px 18px;margin:18px 0;">
+                <p style="margin:0 0 6px 0;font-size:15px;font-weight:800;color:#111827;">🚚 ¿Cuándo llega mi pedido?</p>
+                <p style="margin:0 0 8px 0;font-size:13.5px;color:#4a4a4a;line-height:1.6;">El tiempo de entrega es de <strong>7 a 20 días hábiles</strong> a partir de tu compra. Enviamos a todo México.</p>
+                <p style="margin:0;font-size:14px;color:#166534;font-weight:700;">📅 Tu pedido llegaría entre el ${fMin} y el ${fMax}.</p>
+                ${refsProv.length ? `<p style="margin:10px 0 0 0;font-size:12px;color:#6b7280;line-height:1.7;">Referencia del proveedor: ${refsProv.join(' &nbsp;·&nbsp; ')}. Estos plazos pueden variar por aduana, temporada o destino.</p>` : ''}
+            </div>
             <div class="legal">
                 <strong>⚠️ IMPORTANTE:</strong> Este documento es una <strong>NOTA DE COMPRA</strong> y <strong>NO tiene validez fiscal</strong>.<br>
                 Para efectos fiscales, este comprobante no es un CFDI. Si requieres factura con validez fiscal, por favor contáctanos.
@@ -307,9 +351,9 @@ async function sendConfirmationEmail(orderData) {
                 <p style="font-size:14px;color:#166534;font-weight:500;margin-bottom:4px;">📧 ¿Necesitas factura con validez fiscal?</p>
                 <p style="font-size:13px;color:#4a4a4a;">Escríbenos a <strong>bonu.marketplace@gmail.com</strong> o llama al <strong>322 270 0732</strong> y te enviaremos tu factura CFDI.</p>
             </div>
-            <div style="text-align:center;padding:8px 0 4px 0;border-top:1px solid #f3f4f6;margin-top:8px;">
-                <p style="font-size:16px;font-weight:600;color:#1f2937;">¡Gracias por confiar en Bonü! ❤️</p>
-                <p style="font-size:13px;color:#6b7280;">Tu compra está en proceso. Recibirás actualizaciones por correo.</p>
+            <div style="text-align:center;padding:10px 0 4px 0;border-top:1px solid #f3f4f6;margin-top:8px;">
+                <p style="font-size:17px;font-weight:700;color:#1f2937;">${safeName ? `¡Gracias por tu compra, ${safeName}! ❤️` : '¡Gracias por tu compra! ❤️'}</p>
+                <p style="font-size:13px;color:#6b7280;">Tu pedido ya está en proceso. Te avisaremos por correo en cada avance.</p>
             </div>
         </div>
         <div class="footer">
@@ -328,7 +372,7 @@ async function sendConfirmationEmail(orderData) {
 </body>
 </html>`;
     
-    const subject = `📄 Nota de Compra #${orderId} - Bonü Marketplace`;
+    const subject = `🎉 ¡Gracias por tu compra! - Nota de Compra #${orderId} - Bonü`;
     
     try {
         await Promise.race([
@@ -1484,12 +1528,14 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
         console.error('emitNewOrder fallo:', err.message);
     }
     
-    /* 📲 Aviso WhatsApp: nueva venta */
+    /* 📲 Aviso WhatsApp: nueva venta (con entrega estimada) */
     try {
+        const fVMin = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MIN_HABILES));
+        const fVMax = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MAX_HABILES));
         const itemsVenta = data.validatedItems || [];
         const nPiezas = itemsVenta.reduce((a, it) => a + (Number(it.cantidad) || 1), 0);
         const listaArt = itemsVenta.slice(0, 5).map(it => '• ' + waSanitizar(it.nombre || it.id, 42) + (Number(it.cantidad) > 1 ? ' x' + it.cantidad : '')).join('\n');
-        waEnviarCallMeBot('💰 ¡VENTA EN BONÜ.COM! 🎉\n\n🧾 Orden: ' + orderId + '\n💳 Pago: ' + paymentMethod + '\n📦 ' + nPiezas + ' pza(s):\n' + listaArt + (itemsVenta.length > 5 ? '\n• +' + (itemsVenta.length - 5) + ' más' : '') + '\n💵 Total: $' + Number(data.total).toFixed(2) + ' MXN\n👤 ' + waSanitizar(data.customerName || 'Cliente', 60) + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        waEnviarCallMeBot('💰 ¡VENTA EN BONÜ.COM! 🎉\n\n🧾 Orden: ' + orderId + '\n💳 Pago: ' + paymentMethod + '\n📦 ' + nPiezas + ' pza(s):\n' + listaArt + (itemsVenta.length > 5 ? '\n• +' + (itemsVenta.length - 5) + ' más' : '') + '\n💵 Total: $' + Number(data.total).toFixed(2) + ' MXN\n👤 ' + waSanitizar(data.customerName || 'Cliente', 60) + '\n🚚 Entrega estimada: ' + fVMin + ' — ' + fVMax + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
     } catch (errW) { console.warn('Aviso WhatsApp venta fallo:', errW.message); }
 
     console.log(`✅ Orden creada: ${orderId} - ${paymentMethod} - $${data.total} MXN`);
