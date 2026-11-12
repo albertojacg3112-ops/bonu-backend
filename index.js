@@ -4364,6 +4364,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🏢 Bonü Marketplace - RFC: CAGJ791031159`);
     console.log(`📧 bonu.marketplace@gmail.com | 📞 322 270 0732`);
     console.log('==================================================');
+    iniciarAutoreparador();
 });
 
 process.on('SIGTERM', () => {
@@ -4375,5 +4376,67 @@ process.on('SIGINT', () => {
     console.log('🛑 SIGINT recibido. Cerrando servidor...');
     server.close(() => process.exit(0));
 });
+
+/* ========== [AUTOREPARADOR BONU 2026-11-13] inicio — anti-sleep + blindaje de proceso ==========
+ * Problema diagnosticado 2026-11-13: Render FREE duerme el servicio tras ~15 min sin tráfico
+ * y al despertar tarda 23-60 s (cold start). El cliente percibe que "la página se cae".
+ * Solución en 2 capas:
+ *  1) Auto-ping cada KEEP_ALIVE_MIN minutos a /api/status -> el servicio NUNCA se duerme.
+ *  2) uncaughtException / unhandledRejection capturados -> un error ya no mata el proceso
+ *     (si el proceso muere, Render lo reinicia dormido y vuelve el cold start).
+ * Config opcional en Render: KEEP_ALIVE_URL (url propia) y KEEP_ALIVE_MIN (min 5).
+ */
+const AUTOREPARADOR = {
+    url: (process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || 'https://bonu-backend.onrender.com').replace(/\/+$/, ''),
+    minutos: Math.max(5, parseInt(process.env.KEEP_ALIVE_MIN || '10', 10) || 10),
+    timer: null,
+    fallos: 0,
+    exito: 0
+};
+
+function autoreparadorPing() {
+    const t0 = Date.now();
+    const reportar = (ok, detalle) => {
+        if (ok) {
+            AUTOREPARADOR.fallos = 0;
+            AUTOREPARADOR.exito++;
+            console.log(`[AUTOREPARADOR] ping OK en ${Date.now() - t0}ms (total #${AUTOREPARADOR.exito})`);
+        } else {
+            AUTOREPARADOR.fallos++;
+            console.log(`[AUTOREPARADOR] ping FALLA #${AUTOREPARADOR.fallos}: ${detalle}`);
+        }
+    };
+    try {
+        if (typeof fetch === 'function') {
+            fetch(`${AUTOREPARADOR.url}/api/status`, { method: 'GET' })
+                .then(r => reportar(!!(r && r.status === 200), `HTTP ${r ? r.status : 'sin respuesta'}`))
+                .catch(e => reportar(false, e && e.message ? e.message : 'error de red'));
+        } else {
+            const req = https.get(`${AUTOREPARADOR.url}/api/status`, (res) => {
+                res.resume();
+                reportar(res.statusCode === 200, `HTTP ${res.statusCode}`);
+            });
+            req.on('error', (e) => reportar(false, e.message));
+            req.setTimeout(30000, () => req.destroy(new Error('timeout 30s')));
+        }
+    } catch (e) {
+        reportar(false, e.message);
+    }
+}
+
+function iniciarAutoreparador() {
+    if (AUTOREPARADOR.timer) return;
+    console.log(`[AUTOREPARADOR] ACTIVO - auto-ping cada ${AUTOREPARADOR.minutos} min a ${AUTOREPARADOR.url}/api/status (evita el sueño de Render y los cold starts)`);
+    autoreparadorPing();
+    AUTOREPARADOR.timer = setInterval(autoreparadorPing, AUTOREPARADOR.minutos * 60 * 1000);
+}
+
+process.on('uncaughtException', (err) => {
+    console.error('[AUTOREPARADOR] uncaughtException capturado - el servidor SIGUE VIVO:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[AUTOREPARADOR] unhandledRejection capturado - el servidor SIGUE VIVO:', reason && reason.stack ? reason.stack : reason);
+});
+/* ========== [AUTOREPARADOR BONU 2026-11-13] fin ========== */
 
 module.exports = { app, io, emitNewOrder, emitPaymentFailed, emitLowStock, emitNewVendor };
