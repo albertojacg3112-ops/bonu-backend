@@ -10,7 +10,6 @@ const nodemailer = require('nodemailer');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
-const https = require('https');
 const socketIo = require('socket.io');
 
 const app = express();
@@ -120,38 +119,6 @@ function getOptimizedProductImages(product) {
         large: product.imagenes[0] ? getOptimizedImageUrl(product.imagenes[0], 800, 800) : null
     };
 }
-/* ========== [ENTREGA 2026-11-10] Correo de agradecimiento + fechas aproximadas ========== */
-/* Promesa de entrega: 7 a 20 días hábiles (fechas concretas calculadas desde la compra). */
-const ENTREGA_MIN_HABILES = 7;
-const ENTREGA_MAX_HABILES = 20;
-function sumarDiasHabiles(dias, desde = new Date()) {
-    /* Base en hora de México (UTC-6 fijo, sin horario de verano).
-       Se fija mediodía UTC para que la fecha es-MX nunca ruede un día. */
-    const d = new Date(desde.getTime() - 6 * 3600 * 1000);
-    d.setUTCHours(12, 0, 0, 0);
-    let agregados = 0;
-    while (agregados < dias) {
-        d.setUTCDate(d.getUTCDate() + 1);
-        const w = d.getUTCDay();
-        if (w !== 0 && w !== 6) agregados++; /* sábados y domingos no cuentan */
-    }
-    return d;
-}
-function fechaEntregaTxt(d) {
-    const s = d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
-    return s.charAt(0).toUpperCase() + s.slice(1);
-}
-/* Referencias públicas de los proveedores (días hábiles; varían por aduana y temporada):
-   · AliExpress Standard a México: 7 a 30 (hasta 45 en temporada alta) — es.aliexpress.com
-   · CJ Dropshipping (CJPaket/CJPacket) a México: 12 a 25 — blog oficial CJ */
-function refsProveedorDe(items) {
-    const tiene = (p) => (items || []).some(it => String(it.proveedor || '').toLowerCase().includes(p));
-    const refs = [];
-    if (tiene('aliexpress')) refs.push('<b>AliExpress:</b> 7 a 30 días hábiles');
-    if (tiene('cj')) refs.push('<b>CJ Dropshipping:</b> 12 a 25 días hábiles');
-    return refs;
-}
-
 /* ========== NOTA DE COMPRA PROFESIONAL ========== */
 async function sendConfirmationEmail(orderData) {
     if (!emailConfigurado || !emailTransporter) return false;
@@ -199,12 +166,6 @@ async function sendConfirmationEmail(orderData) {
             </tr>
         `;
     }).join('');
-    
-    /* [ENTREGA 2026-11-10] fechas aproximadas de entrega para este pedido */
-    const baseEntrega = date ? new Date(date) : new Date();
-    const fMin = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MIN_HABILES, baseEntrega));
-    const fMax = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MAX_HABILES, baseEntrega));
-    const refsProv = refsProveedorDe(items);
     
     const empresa = {
         nombre: 'Bonü Marketplace',
@@ -320,6 +281,7 @@ async function sendConfirmationEmail(orderData) {
                 <div class="section-title">💰 Resumen de Pago</div>
                 <div class="row"><span class="row-label">Subtotal:</span><span class="row-value">${formatCurrency(subtotal)}</span></div>
                 ${envio > 0 ? `<div class="row"><span class="row-label">Envío:</span><span class="row-value">${formatCurrency(envio)}</span></div>` : `<div class="row"><span class="row-label">Envío:</span><span class="row-value" style="color:#10b981;">Gratis</span></div>`}
+                ${iva > 0 ? `<div class="row"><span class="row-label">IVA (16%):</span><span class="row-value">${formatCurrency(iva)}</span></div>` : ''}
                 ${descuento > 0 ? `<div class="row"><span class="row-label">Descuento:</span><span class="row-value" style="color:#ef4444;">-${formatCurrency(descuento)}</span></div>` : ''}
                 ${cashbackUsado > 0 ? `<div class="row"><span class="row-label">Cashback usado:</span><span class="row-value" style="color:#3b82f6;">-${formatCurrency(cashbackUsado)}</span></div>` : ''}
                 ${safeCupon ? `<div class="row"><span class="row-label">Cupón aplicado:</span><span class="row-value" style="color:#8b5cf6;">${safeCupon}</span></div>` : ''}
@@ -337,12 +299,6 @@ async function sendConfirmationEmail(orderData) {
                 ${safeUsoCFDI ? `<div class="row"><span class="row-label">Uso CFDI:</span><span class="row-value">${safeUsoCFDI}</span></div>` : ''}
             </div>
             ` : ''}
-            <div style="background:#fffbeb;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:10px;padding:16px 18px;margin:18px 0;">
-                <p style="margin:0 0 6px 0;font-size:15px;font-weight:800;color:#111827;">🚚 ¿Cuándo llega mi pedido?</p>
-                <p style="margin:0 0 8px 0;font-size:13.5px;color:#4a4a4a;line-height:1.6;">El tiempo de entrega es de <strong>7 a 20 días hábiles</strong> a partir de tu compra. Enviamos a todo México.</p>
-                <p style="margin:0;font-size:14px;color:#166534;font-weight:700;">📅 Tu pedido llegaría entre el ${fMin} y el ${fMax}.</p>
-                ${refsProv.length ? `<p style="margin:10px 0 0 0;font-size:12px;color:#6b7280;line-height:1.7;">Referencia del proveedor: ${refsProv.join(' &nbsp;·&nbsp; ')}. Estos plazos pueden variar por aduana, temporada o destino.</p>` : ''}
-            </div>
             <div class="legal">
                 <strong>⚠️ IMPORTANTE:</strong> Este documento es una <strong>NOTA DE COMPRA</strong> y <strong>NO tiene validez fiscal</strong>.<br>
                 Para efectos fiscales, este comprobante no es un CFDI. Si requieres factura con validez fiscal, por favor contáctanos.
@@ -351,9 +307,9 @@ async function sendConfirmationEmail(orderData) {
                 <p style="font-size:14px;color:#166534;font-weight:500;margin-bottom:4px;">📧 ¿Necesitas factura con validez fiscal?</p>
                 <p style="font-size:13px;color:#4a4a4a;">Escríbenos a <strong>bonu.marketplace@gmail.com</strong> o llama al <strong>322 270 0732</strong> y te enviaremos tu factura CFDI.</p>
             </div>
-            <div style="text-align:center;padding:10px 0 4px 0;border-top:1px solid #f3f4f6;margin-top:8px;">
-                <p style="font-size:17px;font-weight:700;color:#1f2937;">${safeName ? `¡Gracias por tu compra, ${safeName}! ❤️` : '¡Gracias por tu compra! ❤️'}</p>
-                <p style="font-size:13px;color:#6b7280;">Tu pedido ya está en proceso. Te avisaremos por correo en cada avance.</p>
+            <div style="text-align:center;padding:8px 0 4px 0;border-top:1px solid #f3f4f6;margin-top:8px;">
+                <p style="font-size:16px;font-weight:600;color:#1f2937;">¡Gracias por confiar en Bonü! ❤️</p>
+                <p style="font-size:13px;color:#6b7280;">Tu compra está en proceso. Recibirás actualizaciones por correo.</p>
             </div>
         </div>
         <div class="footer">
@@ -372,7 +328,7 @@ async function sendConfirmationEmail(orderData) {
 </body>
 </html>`;
     
-    const subject = `🎉 ¡Gracias por tu compra! - Nota de Compra #${orderId} - Bonü`;
+    const subject = `📄 Nota de Compra #${orderId} - Bonü Marketplace`;
     
     try {
         await Promise.race([
@@ -455,121 +411,6 @@ async function verificarAuthOpcional(req, res, next) {
     }
     next();
 }
-
-/* ============================================================
-   ========== SAGA 4 · MOTOR DE PRECIOS + CASHBACK v10 ==========
-   Reglas de negocio (definidas por el dueño de Bonü):
-   · Cashback base 5% en TODAS las compras.
-   · 10% si el total supera $45,000 MXN y TODOS los productos
-     van en cantidades de 6 piezas o más.
-   · 15% si el total supera $60,000 MXN.
-   · 7%, 8%, 10%, 12%, 15%, 18% y 20%: promos por producto
-     (campo cashbackPromo en el documento del producto) que el
-     admin publica cuando decida; se aplican línea por línea
-     cuando son mayores al nivel del carrito. Tope: 20%.
-   · El precio de venta se calcula para que DESPUÉS de regalar
-     el cashback quede la ganancia elegida sobre el costo:
-       precio = (costo + envío) × (1 + margen%) / (1 − cashback%)
-   ============================================================ */
-const LISTA_MARGENES = [5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 65, 70, 75, 80, 85, 90, 95, 100, 110, 120];
-const LISTA_CASHBACK = [5, 7, 8, 10, 12, 15, 18, 20];
-const CASHBACK_BASE = 5;
-const CASHBACK_MAX_PRODUCTO = 20;
-const UMBRAL_CASHBACK_10 = 45000;
-const UMBRAL_CASHBACK_15 = 60000;
-const QTY_MIN_CASHBACK_10 = 6;
-
-/* Config editable guardada en Firestore (config/precios); valores por defecto si no existe */
-const CONFIG_PRECIOS_DEFAULT = { margenDefault: 40, cashbackDefault: 5, descMayoreo6: 10 };
-let configPrecios = { ...CONFIG_PRECIOS_DEFAULT };
-
-async function cargarConfigPrecios() {
-    if (!firestore) return configPrecios;
-    try {
-        const docCfg = await firestore.collection('config').doc('precios').get();
-        if (docCfg.exists) {
-            const d = docCfg.data();
-            configPrecios = {
-                margenDefault: LISTA_MARGENES.includes(d.margenDefault) ? d.margenDefault : CONFIG_PRECIOS_DEFAULT.margenDefault,
-                cashbackDefault: LISTA_CASHBACK.includes(d.cashbackDefault) ? d.cashbackDefault : CONFIG_PRECIOS_DEFAULT.cashbackDefault,
-                descMayoreo6: (typeof d.descMayoreo6 === 'number' && d.descMayoreo6 >= 0 && d.descMayoreo6 <= 50) ? d.descMayoreo6 : CONFIG_PRECIOS_DEFAULT.descMayoreo6
-            };
-        }
-    } catch (e) {
-        console.error('⚠️ No pude leer config/precios (uso valores por defecto):', e.message);
-    }
-    return configPrecios;
-}
-
-/* Redondeo comercial: termina en .99 y NUNCA queda por debajo del cálculo */
-function redondeo99(x) {
-    if (!Number.isFinite(x) || x <= 0) return 0;
-    let p = Math.floor(x) + 0.99;
-    if (p < x - 1e-9) p += 1;
-    return Math.round(p * 100) / 100;
-}
-
-/* Motor principal: precio de venta que deja la ganancia elegida DESPUÉS del cashback */
-function calcularPrecioVenta({ costo, envio = 0, margen, cashback = CASHBACK_BASE, descMayoreo6 = null }) {
-    const dm = (typeof descMayoreo6 === 'number' && descMayoreo6 >= 0 && descMayoreo6 <= 50) ? descMayoreo6 : configPrecios.descMayoreo6;
-    const costoTotal = (parseFloat(costo) || 0) + (parseFloat(envio) || 0);
-    const m = Math.max(0, parseFloat(margen) || 0);
-    const cb = Math.min(CASHBACK_MAX_PRODUCTO, Math.max(0, parseFloat(cashback) || CASHBACK_BASE));
-    const netoDeseado = costoTotal * (1 + m / 100);                 // lo que quiero recibir neto por pieza
-    const precioFinal = redondeo99(netoDeseado / (1 - cb / 100));   // precio que anula el costo del cashback
-    const precio6 = redondeo99(precioFinal * 6 * (1 - dm / 100));   // paquete 6 piezas con desc. mayoreo
-    const gananciaReal = Math.round((precioFinal * (1 - cb / 100) - costoTotal) * 100) / 100;
-    return {
-        costo: Math.round(costoTotal * 100) / 100,
-        margen: m,
-        cashback: cb,
-        descMayoreo6: dm,
-        precioFinal,
-        precio6,
-        gananciaRealPorPieza: gananciaReal,
-        margenRealSobrePrecio: precioFinal > 0 ? Math.round(gananciaReal / precioFinal * 1000) / 10 : 0
-    };
-}
-
-/* Tabla comparativa: el mismo costo a TODOS los márgenes de la lista fija */
-function tablaPreciosPorMargen({ costo, envio = 0, cashback = CASHBACK_BASE, descMayoreo6 = null }) {
-    return LISTA_MARGENES.map(m => {
-        const r = calcularPrecioVenta({ costo, envio, margen: m, cashback, descMayoreo6 });
-        return { margen: m, precioFinal: r.precioFinal, precio6: r.precio6, gananciaRealPorPieza: r.gananciaRealPorPieza };
-    });
-}
-
-/* Nivel de cashback de un carrito según las reglas del dueño */
-function nivelCashbackCarrito(items, totalCompra) {
-    const total = Math.max(parseFloat(totalCompra) || 0, 0);
-    let pct = CASHBACK_BASE, nivel = 'base_5';
-    const todasQty6 = Array.isArray(items) && items.length > 0 && items.every(i => (parseInt(i.cantidad) || 0) >= QTY_MIN_CASHBACK_10);
-    if (total > UMBRAL_CASHBACK_15) { pct = 15; nivel = 'total_mayor_60000'; }
-    else if (total > UMBRAL_CASHBACK_10 && todasQty6) { pct = 10; nivel = 'total_mayor_45000_y_6piezas'; }
-    return { pct, nivel, todasQty6, total };
-}
-
-/* Cashback total de una orden: nivel del carrito, o el promo del producto si es mayor (línea por línea) */
-function calcularCashbackOrden(items, totalCompra) {
-    const { pct: pctNivel, nivel } = nivelCashbackCarrito(items, totalCompra);
-    let monto = 0;
-    const lineas = [];
-    for (const i of (Array.isArray(items) ? items : [])) {
-        const baseLinea = (parseFloat(i.precioReal) || 0) * (parseInt(i.cantidad) || 0);
-        const promo = Math.min(CASHBACK_MAX_PRODUCTO, Math.max(0, parseFloat(i.cashbackPromo) || 0));
-        const pctLinea = Math.max(pctNivel, promo);
-        const montoLinea = baseLinea * pctLinea / 100;
-        monto += montoLinea;
-        lineas.push({ id: i.id, nombre: i.nombre || '', pct: pctLinea, monto: Math.round(montoLinea * 100) / 100 });
-    }
-    return {
-        porcentajeNivel: pctNivel,
-        nivel,
-        monto: Math.round(monto * 100) / 100,
-        lineas
-    };
-}
-cargarConfigPrecios(); // precarga inicial (no bloquea el arranque)
 
 /* ========== VARIABLES DE ENTORNO ========== */
 const STRIPE_SECRET_KEY = (process.env.STRIPE_SECRET_KEY || '').trim();
@@ -1281,9 +1122,7 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             precioReal: precioReal,
             costoEnvio: parseFloat(prod.costoEnvio) || 0,
             proveedor: prod.proveedor || 'Bonü',
-            precioProveedor: parseFloat(prod.precioProveedor) || precioReal,
-            /* SAGA 4: cashback promo publicado para este producto (7,8,10,12,15,18,20) si existe */
-            cashbackPromo: Math.min(CASHBACK_MAX_PRODUCTO, parseFloat(prod.cashbackPromo) || 0)
+            precioProveedor: parseFloat(prod.precioProveedor) || precioReal
         });
         
         subtotal += precioReal * cantidad;
@@ -1334,11 +1173,8 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     }
     
     const envio = subtotal >= 999 ? 0 : validatedItems.reduce((s, i) => s + (i.costoEnvio || 0), 0);
-    /* [IVA INCLUIDO 2026-11-10] El precio publicado YA trae el IVA 16% dentro.
-       Ya NO se suma al total: el cliente paga lo publicado + envío.
-       Solo se registra el IVA contenido (16/116) para SAT / Caja BonuPay. */
-    const iva = Math.round(((subtotal - descuento) * 16 / 116) * 100) / 100;
-    const total = Math.round((subtotal - descuento - cashbackUsar + envio) * 100) / 100;
+    const iva = (subtotal - descuento) * 0.16;
+    const total = Math.round((subtotal - descuento - cashbackUsar + envio + iva) * 100) / 100;
     
     if (total <= 0) {
         return res.status(400).json({ success: false, error: 'Total inválido' });
@@ -1447,11 +1283,7 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
     
     if (data.userId) {
         const userRef = firestore.collection('clientes').doc(data.userId);
-        /* SAGA 4: cashback por niveles (5% base · 10% >$45,000 con 6 pzas c/u · 15% >$60,000)
-           más las promos por producto publicadas (cashbackPromo) cuando son mayores */
-        const cashbackOrden = calcularCashbackOrden(data.validatedItems, data.total);
-        const cashbackGanado = cashbackOrden.monto;
-        console.log(`💰 Cashback nivel ${cashbackOrden.porcentajeNivel}% (${cashbackOrden.nivel}): $${cashbackGanado} de $${data.total}`);
+        const cashbackGanado = data.total * 0.05;
         
         batch.update(userRef, {
             cashbackBalance: admin.firestore.FieldValue.increment(
@@ -1459,9 +1291,6 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
             ),
             cashbackHistory: admin.firestore.FieldValue.arrayUnion({
                 amount: cashbackGanado,
-                porcentaje: cashbackOrden.porcentajeNivel,
-                nivel: cashbackOrden.nivel,
-                detalle: cashbackOrden.lineas,
                 orderId,
                 date: new Date().toISOString(),
                 type: 'earned'
@@ -1528,16 +1357,6 @@ let finalizarOrden = async (checkoutToken, paymentMethod, paymentId, payerEmail 
         console.error('emitNewOrder fallo:', err.message);
     }
     
-    /* 📲 Aviso WhatsApp: nueva venta (con entrega estimada) */
-    try {
-        const fVMin = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MIN_HABILES));
-        const fVMax = fechaEntregaTxt(sumarDiasHabiles(ENTREGA_MAX_HABILES));
-        const itemsVenta = data.validatedItems || [];
-        const nPiezas = itemsVenta.reduce((a, it) => a + (Number(it.cantidad) || 1), 0);
-        const listaArt = itemsVenta.slice(0, 5).map(it => '• ' + waSanitizar(it.nombre || it.id, 42) + (Number(it.cantidad) > 1 ? ' x' + it.cantidad : '')).join('\n');
-        waEnviarCallMeBot('💰 ¡VENTA EN BONÜ.COM! 🎉\n\n🧾 Orden: ' + orderId + '\n💳 Pago: ' + paymentMethod + '\n📦 ' + nPiezas + ' pza(s):\n' + listaArt + (itemsVenta.length > 5 ? '\n• +' + (itemsVenta.length - 5) + ' más' : '') + '\n💵 Total: $' + Number(data.total).toFixed(2) + ' MXN\n👤 ' + waSanitizar(data.customerName || 'Cliente', 60) + '\n🚚 Entrega estimada: ' + fVMin + ' — ' + fVMax + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-    } catch (errW) { console.warn('Aviso WhatsApp venta fallo:', errW.message); }
-
     console.log(`✅ Orden creada: ${orderId} - ${paymentMethod} - $${data.total} MXN`);
     
     return { orderId };
@@ -1681,253 +1500,10 @@ app.get('/health', (req, res) => res.json({
     timestamp: Date.now() 
 }));
 
-/* ========== [CORREO BONUGIFT 2026-11-09] Envío del correo del código ========== */
-const BONUGIFT_IMG_CORREO = 'https://i.ibb.co/wZXNvvXy/bonugift-1000-correo.jpg';
-const BONUGIFT_SITIO = 'https://xn--bon-joa.com';
-const BONUGIFT_PROMO_FIN = '15 de diciembre de 2026';
-
-function correoBonuGiftHTMLServer(email, codigo, montoTxt, nombre) {
-    const saludo = nombre ? 'Hola ' + sanitize(nombre) + ' \uD83D\uDC4B' : '\u00A1Hola! \uD83D\uDC4B';
-    return `<div style="margin:0;padding:24px 8px;background:#f5f5f4;font-family:Arial,Helvetica,sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:2px solid #facc15;">
-    <tr><td style="background:#0a0a0a;padding:18px 24px;text-align:center;"><span style="color:#facc15;font-size:30px;font-weight:800;letter-spacing:1px;">bon&uuml;</span><span style="color:#ffffff;font-size:13px;">&nbsp;&nbsp;|&nbsp;&nbsp;bon&uuml;.com — el mercado que te paga</span></td></tr>
-    <tr><td style="padding:24px 24px 6px 24px;text-align:center;"><p style="margin:0;color:#111827;font-size:16px;">${saludo}</p><p style="margin:8px 0 0 0;color:#111827;font-size:17px;font-weight:800;line-height:1.5;">&#127881; FELICIDADES, CUMPLISTE NUESTRA DIN&Aacute;MICA<br>Y ESO TE HACE GANADOR DE:</p></td></tr>
-    <tr><td style="padding:16px 24px 4px 24px;text-align:center;"><img src="${BONUGIFT_IMG_CORREO}" alt="Bon&uuml;Gift ${montoTxt}" width="560" style="width:100%;max-width:560px;height:auto;border-radius:14px;border:2px solid #facc15;display:block;"></td></tr>
-    <tr><td style="padding:14px 24px 4px 24px;text-align:center;"><p style="margin:0;color:#374151;font-size:14px;font-weight:700;">TU C&Oacute;DIGO DE ACTIVACI&Oacute;N — FREE CASH ${montoTxt}</p>
-      <div style="margin:10px auto 0 auto;border:3px dashed #facc15;background:#fefce8;border-radius:14px;padding:12px 26px;display:inline-block;"><span style="color:#111827;font-size:26px;font-weight:800;letter-spacing:3px;">${sanitize(codigo)}</span></div>
-      <p style="margin:10px 0 0 0;color:#6b7280;font-size:12px;">Escr&iacute;belo tal cual en bon&uuml;.com (caja dorada debajo del buscador)</p></td></tr>
-    <tr><td style="padding:14px 28px;"><p style="margin:0;color:#111827;font-size:14px;font-weight:700;text-align:center;line-height:1.6;">BON&Uuml; TE ADELANTA TU AGUINALDO PARA QUE PAGUES PARTE DE TUS REGALOS NAVIDE&Ntilde;OS PARA TU FAMILIA, AMIGOS O CONOCIDOS.</p>
-      <p style="margin:8px 0 0 0;color:#a16207;font-size:15px;font-weight:800;text-align:center;">&iexcl;DISFRUTA TU BON&Uuml;GIFT Y TU FREE CASH EN BON&Uuml;.COM!</p></td></tr>
-    <tr><td style="padding:6px 24px 16px 24px;text-align:center;"><a href="${BONUGIFT_SITIO}" style="display:inline-block;background:#facc15;color:#111827;font-size:15px;font-weight:800;padding:13px 30px;border-radius:999px;text-decoration:none;">&#128722; ACTIVAR Y COMPRAR EN BON&Uuml;.COM</a></td></tr>
-    <tr><td style="padding:0 28px 18px 28px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:12px;"><tr><td style="padding:14px 16px;">
-      <p style="margin:0 0 6px 0;color:#111827;font-size:13px;font-weight:800;">&iquest;C&oacute;mo uso mi Bon&uuml;Gift? (3 pasos)</p>
-      <p style="margin:0;color:#4b5563;font-size:12.5px;line-height:1.7;">1&#65039;&#8419; Reg&iacute;strate en bon&uuml;.com y activa tu c&oacute;digo en la <b>caja dorada</b> debajo del buscador: tu Free Cash se suma a tu saldo al instante.<br>2&#65039;&#8419; Elige productos con el <b>&iacute;cono del regalo dorado &#127873;</b> y agr&eacute;alos a tu carrito.<br>3&#65039;&#8419; En el checkout paga <b>10/15/20/25%</b> con tu saldo Bon&uuml;Gift y el resto con tu tarjeta. &iexcl;Y ganas 5% de cashback en tu compra!</p>
-    </td></tr></table></td></tr>
-    <tr><td style="padding:0 28px 22px 28px;"><p style="margin:0;color:#6b7280;font-size:11px;line-height:1.7;text-align:center;background:#f3f4f6;border-radius:10px;padding:10px 12px;">T&eacute;rminos: tu c&oacute;digo es <b>v&aacute;lido solo 1 vez</b>, <b>no es transferible</b> ni acumulable con otras promociones u ofertas. Aplica &uacute;nicamente en productos marcados con el <b>&iacute;cono del regalo dorado &#127873;</b>. Vigencia: <b>15 d&iacute;as naturales a partir de la activaci&oacute;n</b> de tu c&oacute;digo. Promoci&oacute;n vigente hasta el <b>${BONUGIFT_PROMO_FIN}</b>. Cashback y saldo Bon&uuml;Gift aplican seg&uacute;n la pol&iacute;tica de bon&uuml;.com.</p></td></tr>
-    <tr><td style="background:#0a0a0a;padding:14px 24px;text-align:center;"><p style="margin:0;color:#facc15;font-size:12px;font-weight:700;">bon&uuml; te adelanta tu aguinaldo &#127876;</p><p style="margin:4px 0 0 0;color:#9ca3af;font-size:11px;">bon&uuml;.com · Puerto Vallarta, Jal. · Env&iacute;os a todo M&eacute;xico</p></td></tr>
-  </table>
-</div>`;
-}
-
-const giftEmailLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false,
-    message: { success: false, error: 'Demasiados correos. Intenta más tarde.' } });
-
-/* ========== 📲 WHATSAPP (CallMeBot) [v4] — avisos a Alberto (2 números) ========== */
-/* CallMeBot México: el número activado va con prefijo 521 (ej. 5216444374228 = +52 1 644 437 4228).
-   Opcional en Render → Variables de entorno:
-     WHATSAPP_TARGETS  = 5216444374228:apikey1,5213222700732:apikey2   (sobrescribe todo)
-     WHATSAPP_APIKEY   = apikey del 644   ·   WHATSAPP_APIKEY2 = apikey del 322
-   Sin variables: usa el default de abajo (el 644 ya quedó activado con su apikey).
-   Para el 322 270 0732: envía "I allow callmebot to send me messages" al +34 644 51 95 23
-   desde ese WhatsApp, copia la apikey que te llegue y ponla en WHATSAPP_APIKEY2. */
-function waParseTargets(){
-    const raw = (process.env.WHATSAPP_TARGETS || '').trim();
-    if(raw){
-        return raw.split(',').map(p => { const [tel, key] = p.trim().split(':');
-            return { phone: (tel || '').replace(/\D/g, ''), apikey: (key || '').trim() }; })
-            .filter(t => t.phone && t.apikey);
-    }
-    const t1 = { phone: '5216444374228', apikey: (process.env.WHATSAPP_APIKEY || '4905091').trim() };
-    const t2 = { phone: '5213222700732', apikey: (process.env.WHATSAPP_APIKEY2 || '').trim() };
-    return [t1, t2].filter(t => t.phone && t.apikey);
-}
-const WA_TARGETS = waParseTargets();
-const waConfigurado = WA_TARGETS.length > 0;
-const waLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false,
-    message: { success: false, error: 'Demasiados avisos. Intenta más tarde.' } });
-function waSanitizar(s, n){ return String(s || '').replace(/[\r\n]+/g, ' ').replace(/[*_~`]/g, '').trim().substring(0, n || 80); }
-function waEnviarUno(phone, apikey, msg){
-    return new Promise((resolve) => {
-        const url = 'https://api.callmebot.com/whatsapp.php?phone=' + encodeURIComponent('+' + phone) + '&text=' + encodeURIComponent(String(msg).substring(0, 1400)) + '&apikey=' + encodeURIComponent(apikey);
-        const req = https.get(url, (r) => { r.resume(); resolve({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode }); });
-        req.on('error', (e) => resolve({ ok: false, error: e.message }));
-        req.setTimeout(12000, () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
-    });
-}
-/* Envía el aviso a TODOS los WhatsApp configurados (fan-out) */
-async function waEnviarCallMeBot(msg){
-    if(!waConfigurado) return { ok: false, enviados: 0, total: 0, error: 'WhatsApp sin apikey CallMeBot activa' };
-    const rs = await Promise.all(WA_TARGETS.map(t => waEnviarUno(t.phone, t.apikey, msg)));
-    const enviados = rs.filter(r => r.ok).length;
-    rs.forEach((r, i) => { if(!r.ok) console.warn('📲 WhatsApp falló a +' + WA_TARGETS[i].phone + ':', r.error || ('HTTP ' + r.status)); });
-    return { ok: enviados > 0, enviados, total: WA_TARGETS.length, detalles: rs };
-}
-
-app.post('/api/send-gift-email', giftEmailLimiter, verificarAdmin, async (req, res) => {
-    try {
-        if (!emailConfigurado || !emailTransporter) {
-            return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER/EMAIL_PASS)' });
-        }
-        const to = String(req.body.to || '').trim().toLowerCase();
-        const codigo = String(req.body.codigo || '').trim().toUpperCase();
-        const monto = Number(req.body.monto) || 1000;
-        const nombre = String(req.body.nombre || '').trim().substring(0, 60);
-        if (!isValidEmail(to)) return res.status(400).json({ success: false, error: 'Correo del cliente inválido' });
-        if (!codigo || codigo.length < 4 || codigo.length > 24) return res.status(400).json({ success: false, error: 'Código inválido' });
-        if (!(monto > 0) || monto > 100000) return res.status(400).json({ success: false, error: 'Monto inválido' });
-        const montoTxt = formatCurrency(monto);
-        const html = correoBonuGiftHTMLServer(to, codigo, montoTxt, nombre);
-        await Promise.race([
-            emailTransporter.sendMail({
-                from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
-                to: to,
-                subject: `🎁 Tu BonüGift de ${montoTxt} — ¡Felicidades, ganaste tu Free Cash!`,
-                html: html
-            }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 15000))
-        ]);
-        console.log(`📧 BonüGift ${codigo} enviada a ${to} (${montoTxt})`);
-        /* 📲 Aviso WhatsApp: entrega de tarjeta BonüGift */
-        waEnviarCallMeBot('🎁 BONÜGIFT ENTREGADA\n\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(to, 60) + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-        try {
-            if (firestore) {
-                await firestore.collection('auditoria').add({
-                    fecha: new Date().toISOString(), admin: (req.user && req.user.email) || 'Backend',
-                    accion: 'Correo BonüGift 📧', detalle: 'Enviado a ' + to + ' · código ' + codigo + ' (' + montoTxt + ')', ip: 'backend'
-                });
-            }
-        } catch (e) { console.warn('No se pudo registrar en auditoría:', e.message); }
-        res.json({ success: true });
-    } catch (error) {
-        console.error('❌ Error send-gift-email:', error.message);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-/* ========== [DINAMICA NAVIDAD 2026-11-11] Envío AUTOMÁTICO del código BonüGift ==========
-   Dinámica 1 (Facebook):    seguir la página oficial + "me gusta" a la publicación → registrarse.
-   Dinámica 2 (WhatsApp):    unirse al canal oficial de WhatsApp → registrarse.
-   Al registrarse y declarar cualquiera de las 2, este endpoint:
-     1) valida y bloquea duplicados (1 código por correo),
-     2) respeta un tope total de códigos (BONUGIFT_MAX_CLAIMS, default 500) — "códigos limitados",
-     3) genera un código BG-XXXX-XXXX compatible con la colección `bonugift` (caja dorada),
-     4) ENVÍA SOLO el correo del código al cliente (correoBonuGiftHTMLServer),
-     5) avisa a Alberto por WhatsApp y registra auditoría.
-   Así Alberto ya NO necesita asignar el código a mano desde el Panel → Promoción. */
-const claimGiftLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false,
-    message: { success: false, error: 'Demasiados intentos. Intenta más tarde.' } });
-function bonuGiftCodigoNavidad(){
-    const abc = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; /* sin I,L,O,0,1 (mismo criterio que el panel) */
-    const seg = () => Array.from({ length: 4 }, () => abc[crypto.randomInt(abc.length)]).join('');
-    return 'BG-' + seg() + '-' + seg();
-}
-app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
-    try {
-        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
-        if (!emailConfigurado || !emailTransporter) {
-            return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER/EMAIL_PASS)' });
-        }
-        const b = req.body || {};
-        const email = String(b.email || '').trim().toLowerCase();
-        const nombre = String(b.nombre || '').trim().substring(0, 60);
-        const uid = String(b.uid || '').trim().substring(0, 64);
-        const dinamica = String(b.dinamica || '').trim().toLowerCase();
-        if (!isValidEmail(email)) return res.status(400).json({ success: false, error: 'Correo inválido' });
-        if (!['facebook', 'whatsapp'].includes(dinamica)) return res.status(400).json({ success: false, error: 'Dinámica inválida (usa facebook o whatsapp)' });
-
-        /* 1) Un solo código por correo */
-        const claimRef = firestore.collection('bonugift_claims').doc(email.replace(/[^a-z0-9@._-]/g, '_'));
-        const claimDoc = await claimRef.get();
-        if (claimDoc.exists) {
-            return res.status(200).json({ success: false, yaReclamado: true,
-                error: 'Ese correo ya reclamó su BonüGift. Revisa tu bandeja (y spam) o escríbenos por WhatsApp.' });
-        }
-
-        /* 2) Códigos limitados */
-        let maxClaims = 500;
-        const mv = parseInt(process.env.BONUGIFT_MAX_CLAIMS, 10);
-        if (mv > 0) maxClaims = mv;
-        try {
-            const todos = await firestore.collection('bonugift_claims').get();
-            if (todos.size >= maxClaims) {
-                return res.status(200).json({ success: false, agotado: true,
-                    error: '¡Los códigos se han agotado! Sé el primero en enterarte de la próxima dinámica siguiéndonos en Facebook.' });
-            }
-        } catch (e) { console.warn('No se pudo contar bonugift_claims (sigo):', e.message); }
-
-        /* 3) Código único compatible con la caja dorada (colección `bonugift`) */
-        let codigo = null;
-        for (let i = 0; i < 12; i++) {
-            const c = bonuGiftCodigoNavidad();
-            const ex = await firestore.collection('bonugift').doc(c).get();
-            if (!ex.exists) { codigo = c; break; }
-        }
-        if (!codigo) return res.status(500).json({ success: false, error: 'No se pudo generar el código, intenta de nuevo' });
-
-        /* 4) Correo del código al cliente */
-        const montoTxt = formatCurrency(1000);
-        const html = correoBonuGiftHTMLServer(email, codigo, montoTxt, nombre);
-        await Promise.race([
-            emailTransporter.sendMail({
-                from: `"Bonü Marketplace" <${process.env.EMAIL_USER}>`,
-                to: email,
-                subject: `🎁 Tu BonüGift de ${montoTxt} — ¡Felicidades, ganaste tu Free Cash!`,
-                html: html
-            }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Email timeout')), 15000))
-        ]);
-
-        /* 5) Resguardo del código + claim + aviso + auditoría */
-        await firestore.collection('bonugift').doc(codigo).set({
-            codigo: codigo, monto: 1000, estado: 'disponible', lote: 'PROMO-NAVIDAD2026',
-            creadoEn: new Date().toISOString(), activadoPor: null,
-            activadoEmail: null, activadoEn: null, dinamica: dinamica, reclamadoEmail: email
-        });
-        await claimRef.set({
-            email: email, nombre: nombre, uid: uid || null, dinamica: dinamica,
-            codigo: codigo, monto: 1000, fecha: new Date().toISOString()
-        });
-        console.log(`🎁 BonüGift auto ${codigo} → ${email} (dinámica: ${dinamica})`);
-        waEnviarCallMeBot('🎁 BONÜGIFT AUTOMÁTICA — DINÁMICA NAVIDAD\n\n🎯 Dinámica: ' + (dinamica === 'facebook' ? '📘 Facebook (seguir + like)' : '💬 Canal de WhatsApp') + '\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(email, 60) + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-        try {
-            await firestore.collection('auditoria').add({
-                fecha: new Date().toISOString(), admin: 'Auto (dinámica navideña)',
-                accion: 'BonüGift automática 🎁', detalle: dinamicaTxt(dinamica) + ' · ' + email + ' · código ' + codigo, ip: 'backend'
-            });
-        } catch (e) { console.warn('No se pudo registrar en auditoría:', e.message); }
-        res.json({ success: true, codigo: codigo });
-    } catch (error) {
-        console.error('❌ Error bonugift-claim:', error.message);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-function dinamicaTxt(d){ return d === 'facebook' ? '📘 Facebook' : (d === 'whatsapp' ? '💬 WhatsApp' : String(d || '—')); }
-
-/* Aviso admin (mensaje libre) — protegido con token de administrador */
-app.post('/api/whatsapp', waLimiter, verificarAdmin, async (req, res) => {
-    try {
-        const msg = waSanitizar(req.body && req.body.msg, 1400);
-        if(!msg) return res.status(400).json({ success: false, error: 'Falta el mensaje' });
-        const r = await waEnviarCallMeBot(msg);
-        if(!r.ok) return res.status(502).json({ success: false, configurado: waConfigurado, error: r.error || ('CallMeBot respondió ' + r.status) });
-        res.json({ success: true, via: 'callmebot' });
-    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
-/* Aviso público de registro/dinámica (rate-limited, mensaje con plantilla fija) */
-app.post('/api/notify-register', waLimiter, async (req, res) => {
-    try {
-        if(!waConfigurado) return res.json({ success: false, configurado: false, error: 'WhatsApp no configurado en el servidor' });
-        const b = req.body || {};
-        const pasos = Math.max(0, Math.min(5, parseInt(b.pasos, 10) || 0));
-        let msg;
-        if(b.dinamica){
-            msg = '🎄 DINÁMICA COMPLETA EN BONÜ.COM\n\n👤 ' + waSanitizar(b.nombre, 60) + '\n📧 ' + waSanitizar(b.email, 60) + '\n✅ 5 likes ❤️ + pasos de redes\n👉 Panel → Promoción: asigna su BonüGift $1,000';
-        } else {
-            msg = '🔔 NUEVO REGISTRO EN BONÜ.COM\n\n👤 ' + waSanitizar(b.nombre, 60) + '\n📧 ' + waSanitizar(b.email, 60) + '\n📱 ' + waSanitizar(b.telefono, 30) + '\n🏷️ ' + (b.tipo === 'vendedor' ? 'Vendedor' : 'Cliente') + '\n🎯 Dinámica: ' + pasos + '/5 pasos declarados\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
-        }
-        const r = await waEnviarCallMeBot(msg);
-        if(!r.ok) return res.status(502).json({ success: false, error: r.error || ('CallMeBot respondió ' + r.status) });
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-
 app.get('/api/status', (req, res) => res.json({
     success: true,
     firestore: !!firestore,
     email: emailConfigurado,
-    whatsapp: waConfigurado,
-    whatsappNums: WA_TARGETS.length,
     stripe: !!stripe,
     mercadoPago: !!MERCADO_PAGO_ACCESS_TOKEN,
     bonupay: !!(BONUPAY_ACCESS_TOKEN || MERCADO_PAGO_ACCESS_TOKEN),
@@ -1944,17 +1520,7 @@ app.get('/api/config', (req, res) => res.json({
     stripePublicKey: process.env.STRIPE_PUBLIC_KEY || null,
     mercadoPagoPublicKey: process.env.MERCADO_PAGO_PUBLIC_KEY || null,
     paypalClientId: process.env.PAYPAL_CLIENT_ID || null,
-    paypalMode: PAYPAL_MODE,
-    /* SAGA 4: reglas públicas de cashback para que el frontend las muestre */
-    cashbackReglas: {
-        base: CASHBACK_BASE,
-        niveles: [
-            { pct: 10, totalMinimo: UMBRAL_CASHBACK_10, piezasMinimasPorProducto: QTY_MIN_CASHBACK_10 },
-            { pct: 15, totalMinimo: UMBRAL_CASHBACK_15 }
-        ],
-        maxProducto: CASHBACK_MAX_PRODUCTO,
-        listaPromos: LISTA_CASHBACK
-    }
+    paypalMode: PAYPAL_MODE
 }));
 
 app.post('/api/verify-stock', async (req, res) => {
@@ -2432,30 +1998,9 @@ app.post('/api/sunsky/import', verificarAdmin, async (req, res) => {
 });
 
 /* ========== TRACKING ========== */
-/* 📈 Monitor de tráfico (avisa por WhatsApp cuando sube de golpe) — v4 */
-const traficoEstado = { horaActual: '', conteo: 0, avisadoEn: '', previos: [] };
-function traficoRegistrarVisita(){
-    const hora = new Date().toISOString().substring(0, 13);
-    if(traficoEstado.horaActual !== hora){
-        traficoEstado.previos.push(traficoEstado.conteo);
-        if(traficoEstado.previos.length > 6) traficoEstado.previos.shift();
-        traficoEstado.horaActual = hora;
-        traficoEstado.conteo = 0;
-        traficoEstado.avisadoEn = '';
-    }
-    traficoEstado.conteo++;
-    try {
-        const previos = traficoEstado.previos.filter(c => c > 0);
-        const promedio = previos.length ? previos.reduce((a, b) => a + b, 0) / previos.length : 0;
-        if(waConfigurado && traficoEstado.conteo >= 30 && traficoEstado.conteo >= promedio * 2 && traficoEstado.avisadoEn !== traficoEstado.horaActual){
-            traficoEstado.avisadoEn = traficoEstado.horaActual;
-            waEnviarCallMeBot('📈 AUMENTO DE TRÁFICO EN BONÜ.COM\n\n👀 ' + traficoEstado.conteo + ' visitas en la última hora' + (promedio ? ' (promedio horas previas: ' + Math.round(promedio) + '/h)' : '') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-        }
-    } catch (e) { /* nunca romper el tracking */ }
-}
 app.post('/api/tracking/visita', async (req, res) => {
     const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
-    traficoRegistrarVisita();
+    
     if (!firestore) return res.json({ success: true });
     
     try {
@@ -2983,7 +2528,7 @@ app.post('/api/admin/reportes/generar', verificarAdmin, async (req, res) => {
                 break;
             }
             case 'impuestos': {
-                const totalIva = pedidos.reduce((s, o) => s + ((o.total || 0) * 16 / 116), 0);
+                const totalIva = pedidos.reduce((s, o) => s + ((o.total || 0) * 0.16), 0);
                 resultado = {
                     totalVentas: pedidos.reduce((s, o) => s + (o.total || 0), 0),
                     totalIVA: totalIva,
@@ -3593,35 +3138,222 @@ app.post('/api/admin/set-role', verificarAdmin, async (req, res) => {
     }
 });
 
-/* ========== OPEN GRAPH ========== */
-app.get('/og/producto/:id', async (req, res) => {
-    if (!firestore) return res.redirect('https://xn--bon-joa.com');
-    
+/* ========== OPEN GRAPH — PREVIEWS AL COMPARTIR (BONU-OG 2026-11-14) ========== */
+/* Los crawlers de WhatsApp, Facebook, TikTok e Instagram NO ejecutan JavaScript:
+   necesitan las etiquetas og:* impresas en el HTML que responde a la URL compartida.
+   Esta seccion sirve /producto/:id (y el alias /og/producto/:id) con el index de la
+   tienda + las etiquetas OG del producto inyectadas, y agrega robots.txt + sitemap.xml. */
+const BONU_SITIO = 'https://xn--bon-joa.com';
+const BONU_OG_DEFAULT_IMG = BONU_SITIO + '/og-image.jpg';
+
+/* <BONU-OG-FNS> */
+let __bonuIndexCache = { html: null, ts: 0 };
+let __bonuSitemapCache = { xml: null, ts: 0 };
+const __bonuProdCache = new Map();
+
+async function __bonuIndexHtml() {
+    const TTL = 6 * 60 * 60 * 1000;
+    if (__bonuIndexCache.html && (Date.now() - __bonuIndexCache.ts) < TTL) return __bonuIndexCache.html;
+    const resp = await fetch(BONU_SITIO + '/?t=' + Date.now());
+    if (!resp.ok) throw new Error('index HTTP ' + resp.status);
+    const html = await resp.text();
+    __bonuIndexCache = { html: html, ts: Date.now() };
+    return html;
+}
+
+function __bonuEscape(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function __bonuImagenOg(p) {
+    let img = '';
+    if (Array.isArray(p.imagenes) && p.imagenes.length) img = String(p.imagenes[0] || '');
+    else if (typeof p.imagen === 'string') img = p.imagen;
+    img = String(img).trim();
+    if (img.indexOf('//') === 0) img = 'https:' + img;
+    if (!/^https?:\/\//.test(img)) img = BONU_OG_DEFAULT_IMG;
+    return img;
+}
+
+function __bonuPrecio(p) {
+    const v = Number(p.precioFinal);
+    return isFinite(v) && v > 0 ? v : null;
+}
+
+function __bonuDescripcionOg(p) {
+    const base = 'Cashback del 5% en cada compra · Envío gratis desde $999 · IVA incluido · Envíos a todo México desde Puerto Vallarta';
+    let desc = String(p.descripcion || '').replace(/\s*\n\s*/g, ' ').replace(/\*+\s?/g, '').trim();
+    if (desc.length > 140) desc = desc.substring(0, 137) + '...';
+    return desc ? (desc + ' | ' + base).substring(0, 250) : base;
+}
+
+function __bonuJsonLd(p, id) {
+    const precio = __bonuPrecio(p);
+    const nombre = String(p.nombre || 'Producto Bonü').substring(0, 120);
+    const url = BONU_SITIO + '/producto/' + encodeURIComponent(id);
+    const data = {
+        '@context': 'https://schema.org',
+        '@type': 'Product',
+        name: nombre,
+        image: [__bonuImagenOg(p)],
+        description: __bonuDescripcionOg(p).substring(0, 200),
+        brand: { '@type': 'Brand', name: 'Bonü' },
+        url: url
+    };
+    if (precio) data.offers = {
+        '@type': 'Offer',
+        price: precio.toFixed(2),
+        priceCurrency: 'MXN',
+        availability: 'https://schema.org/InStock',
+        url: url
+    };
+    return JSON.stringify(data).replace(/</g, '\\u003c');
+}
+
+function __bonuOgLhtml(p, id) {
+    const precio = __bonuPrecio(p);
+    const nombre = String(p.nombre || 'Producto Bonü').substring(0, 90);
+    const titulo = __bonuEscape(precio ? (nombre + ' - $' + precio.toFixed(2) + ' MXN') : nombre);
+    const imagen = __bonuEscape(__bonuImagenOg(p));
+    const descripcion = __bonuEscape(__bonuDescripcionOg(p));
+    const url = BONU_SITIO + '/producto/' + encodeURIComponent(id);
+    const alt = __bonuEscape(nombre);
+    let h = '';
+    h += '<meta property="og:type" content="product">\n';
+    h += '<meta property="og:site_name" content="Bonü">\n';
+    h += '<meta property="og:locale" content="es_MX">\n';
+    h += '<meta property="og:title" content="' + titulo + '">\n';
+    h += '<meta property="og:description" content="' + descripcion + '">\n';
+    h += '<meta property="og:image" content="' + imagen + '">\n';
+    h += '<meta property="og:image:alt" content="' + alt + '">\n';
+    h += '<meta property="og:url" content="' + url + '">\n';
+    if (precio) {
+        h += '<meta property="product:price:amount" content="' + precio.toFixed(2) + '">\n';
+        h += '<meta property="product:price:currency" content="MXN">\n';
+    }
+    h += '<meta name="twitter:card" content="summary_large_image">\n';
+    h += '<meta name="twitter:title" content="' + titulo + '">\n';
+    h += '<meta name="twitter:description" content="' + descripcion + '">\n';
+    h += '<meta name="twitter:image" content="' + imagen + '">\n';
+    h += '<script type="application/ld+json">' + __bonuJsonLd(p, id) + '</script>\n';
+    return h;
+}
+
+function __bonuOgDefaultLhtml() {
+    const titulo = 'Bonü — El marketplace que te paga por comprar';
+    const descripcion = 'Cashback del 5% en cada compra · Envío gratis desde $999 · Precios con IVA incluido · Envíos a todo México desde Puerto Vallarta';
+    let h = '';
+    h += '<meta property="og:type" content="website">\n';
+    h += '<meta property="og:site_name" content="Bonü">\n';
+    h += '<meta property="og:locale" content="es_MX">\n';
+    h += '<meta property="og:title" content="' + titulo + '">\n';
+    h += '<meta property="og:description" content="' + descripcion + '">\n';
+    h += '<meta property="og:image" content="' + BONU_OG_DEFAULT_IMG + '">\n';
+    h += '<meta property="og:url" content="' + BONU_SITIO + '/">\n';
+    h += '<meta name="twitter:card" content="summary_large_image">\n';
+    h += '<meta name="twitter:title" content="' + titulo + '">\n';
+    h += '<meta name="twitter:description" content="' + descripcion + '">\n';
+    h += '<meta name="twitter:image" content="' + BONU_OG_DEFAULT_IMG + '">\n';
+    h += '<script type="application/ld+json">' + JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'WebSite',
+        name: 'Bonü',
+        url: BONU_SITIO + '/',
+        publisher: { '@type': 'Organization', name: 'Bonü', logo: { '@type': 'ImageObject', url: BONU_SITIO + '/icon-512.png' } }
+    }).replace(/</g, '\\u003c') + '</script>\n';
+    return h;
+}
+
+function __bonuInyectarOg(html, block) {
+    // Quita OG/twitter/JSON-LD previos (si el index ya trae los basicos) para no duplicar.
+    const limpio = String(html)
+        .replace(/<meta property="og:[^>]*>/gi, '')
+        .replace(/<meta name="twitter:[^>]*>/gi, '')
+        .replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/gi, '');
+    const t = limpio.indexOf('</title>');
+    if (t !== -1) return limpio.slice(0, t + 8) + '\n' + block + limpio.slice(t + 8);
+    const h = limpio.indexOf('<head>');
+    if (h !== -1) return limpio.slice(0, h + 6) + '\n' + block + limpio.slice(h + 6);
+    return block + limpio;
+}
+
+async function __bonuProducto(id) {
+    const TTL = 10 * 60 * 1000;
+    const c = __bonuProdCache.get(id);
+    if (c && (Date.now() - c.ts) < TTL) return c.data;
+    if (!firestore) throw new Error('Firestore no disponible en el backend');
+    const doc = await firestore.collection('productos').doc(id).get();
+    const data = doc.exists ? doc.data() : null;
+    if (__bonuProdCache.size > 600) __bonuProdCache.clear();
+    __bonuProdCache.set(id, { data: data, ts: Date.now() });
+    return data;
+}
+
+async function __bonuSitemapXml() {
+    const TTL = 6 * 60 * 60 * 1000;
+    if (__bonuSitemapCache.xml && (Date.now() - __bonuSitemapCache.ts) < TTL) return __bonuSitemapCache.xml;
+    const items = ['<url><loc>' + BONU_SITIO + '/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>'];
     try {
-        const productDoc = await firestore.collection('productos').doc(req.params.id).get();
-        
-        if (!productDoc.exists) return res.redirect('https://xn--bon-joa.com');
-        
-        const p = productDoc.data();
-        const imagen = p.imagenes?.[0] || 'https://xn--bon-joa.com/og-image.jpg';
-        const titulo = (p.nombre || 'Bonü Marketplace').replace(/"/g, '&quot;');
-        const descripcionRaw = p.descripcion?.substring(0, 160) || 'Compra en Bonü con cashback y envío gratis';
-        const descripcion = (p.precioFinal ? `$${p.precioFinal} MXN - ` : '') + descripcionRaw.replace(/"/g, '&quot;');
-        const url = `https://xn--bon-joa.com/producto/${req.params.id}`;
-        
+        const snap = await firestore.collection('productos').select().get();
+        snap.forEach(d => {
+            items.push('<url><loc>' + BONU_SITIO + '/producto/' + d.id + '</loc><priority>0.7</priority></url>');
+        });
+    } catch (e) { console.warn('⚠️ sitemap: productos no disponibles:', e.message); }
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + items.join('\n') + '\n</urlset>';
+    __bonuSitemapCache = { xml: xml, ts: Date.now() };
+    return xml;
+}
+/* </BONU-OG-FNS> */
+
+async function __bonuServirProducto(req, res) {
+    let id = req.params.id || req.params[0] || '';
+    if (!id) {
+        const m = String(req.originalUrl || req.url || '').match(/\/producto\/([^\/?#]+)/);
+        id = m ? m[1] : '';
+    }
+    try { id = decodeURIComponent(id); } catch (e) { /* id tal cual */ }
+    res.set('Cache-Control', 'public, max-age=1800');
+    let indexHtml = null;
+    try { indexHtml = await __bonuIndexHtml(); } catch (e) { console.warn('⚠️ OG: no pude obtener el index de la tienda:', e.message); }
+    let p = null;
+    if (id) { try { p = await __bonuProducto(id); } catch (e) { console.warn('⚠️ OG producto:', e.message); } }
+    if (!indexHtml) {
+        // Resaldo minimo si Firebase no responde: OG ligero + redireccion (flujo antiguo).
+        if (!p) return res.redirect(BONU_SITIO + '/');
+        return res.send('<!DOCTYPE html><html><head><meta charset="UTF-8">' + __bonuOgLhtml(p, id) +
+            '</head><body><p>Abriendo Bonü...</p><script>window.location.replace(' +
+            JSON.stringify(BONU_SITIO + '/producto/' + encodeURIComponent(id)) + ');</script></body></html>');
+    }
+    const block = p ? __bonuOgLhtml(p, id) : __bonuOgDefaultLhtml();
+    res.send(__bonuInyectarOg(indexHtml, block));
+}
+
+/* El id puede llegar como /producto/:id (directo o por el rewrite de Firebase)
+   o con cualquier prefijo; la ruta regex cubre todos los casos. */
+app.get('/producto/:id', __bonuServirProducto);
+app.get(/\/producto\/([^\/?#]+)/, __bonuServirProducto);
+app.get('/og/producto/:id', __bonuServirProducto);
+
+app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send('User-agent: *\nAllow: /\n\nSitemap: ' + BONU_SITIO + '/sitemap.xml\n');
+});
+
+app.get('/sitemap.xml', async (req, res) => {
+    try {
+        res.type('application/xml');
         res.set('Cache-Control', 'public, max-age=3600');
-        res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${titulo} | Bonü</title>
-        <meta property="og:type" content="product">
-        <meta property="og:title" content="${titulo}">
-        <meta property="og:description" content="${descripcion}">
-        <meta property="og:image" content="${imagen}">
-        <meta property="og:url" content="${url}">
-        <meta name="twitter:card" content="summary_large_image">
-        </head><body><p>Redirigiendo...</p><script>window.location.href="${url}";</script></body></html>`);
-    } catch { 
-        res.redirect('https://xn--bon-joa.com'); 
+        res.send(await __bonuSitemapXml());
+    } catch (e) {
+        res.type('application/xml');
+        res.status(500).send('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>');
     }
 });
+/* ========== FIN OPEN GRAPH ========== */
+
 /* ========== ALIEXPRESS DROPSHIPPING (API REAL) ========== */
 const AE_KEY = process.env.ALIEXPRESS_APP_KEY || '';
 const AE_SECRET = process.env.ALIEXPRESS_APP_SECRET || '';
@@ -3891,6 +3623,9 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
     if (!AE_KEY || !AE_SECRET) {
         return res.status(500).json({ success: false, error: 'Credenciales AliExpress no configuradas en el servidor' });
     }
+    /* FIX 3: el token se resuelve desde Firestore (con auto-refresh), no desde la
+       variable de entorno ALIEXPRESS_ACCESS_TOKEN. Antes el guard exigía esa env var,
+       por lo que el endpoint moría tras cada redeploy aunque hubiera token guardado. */
     const tokenDisponible = await aeTokenFresco();
     if (!tokenDisponible) {
         return res.status(500).json({ success: false, error: 'No hay token de AliExpress. Autoriza la app y canjea el code primero.' });
@@ -3899,23 +3634,6 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
     if (!raw) return res.status(400).json({ success: false, error: 'Falta id o URL del producto' });
     const productId = extraerIdAliexpress(raw);
     if (!productId) return res.status(400).json({ success: false, error: 'No pude extraer el ID del producto de: ' + raw });
-
-    /* Busca una clave a CUALQUIER profundidad del objeto. La respuesta real de
-       aliexpress.ds.product.get cambia de forma según versión/región: a veces
-       anida todo en result.item y a veces los DTOs cuelgan directo de result.
-       Esto hace el mapeo inmune a esas diferencias (v9). */
-    const buscar = (obj, clave, prof = 0) => {
-        if (!obj || typeof obj !== 'object' || prof > 8) return undefined;
-        if (obj[clave] !== undefined) return obj[clave];
-        for (const k of Object.keys(obj)) {
-            const v = obj[k];
-            if (v && typeof v === 'object') {
-                const hallado = buscar(v, clave, prof + 1);
-                if (hallado !== undefined) return hallado;
-            }
-        }
-        return undefined;
-    };
 
     try {
         const data = await aeLlamar('aliexpress.ds.product.get', {
@@ -3942,244 +3660,71 @@ app.get('/api/admin/aliexpress/producto', verificarAdmin, async (req, res) => {
             });
         }
         const result = r.result || {};
-        if (!result || typeof result !== 'object' || Object.keys(result).length === 0) {
+        const item = result.item || result.awsitem_info?.item || result.data?.item || null;
+        if (!item) {
             return res.status(400).json({
                 success: false,
-                error: `AliExpress no devolvió datos del producto ${productId} (código ${result.error_code || '?'}).`,
+                error: `AliExpress no devolvió el producto (código ${result.error_code || '?'}). Diagnóstico abajo.`,
                 raw: JSON.stringify(data).slice(0, 2000)
             });
         }
 
-        /* ---------- MAPEO ANTIFRÁGIL v9 (basado en la respuesta REAL) ---------- */
-
-        // 1) Nombre e imágenes base (ae_item_base_info_dto, donde sea que esté)
-        const base = buscar(result, 'ae_item_base_info_dto') || {};
-        let nombre = base.subject || buscar(result, 'subject') || '';
+        /* FIX 5: mapeo de campos. La respuesta real de aliexpress.ds.product.get
+           anida los datos en:
+             result.item.ae_item_base_info_dto  -> subject, image_urls
+             result.item.ae_item_sku_info_dtos  -> lista de SKUs con precios reales
+           Se conservan fallbacks a las rutas planas por compatibilidad. */
+        const base = item.ae_item_base_info_dto || {};
+        const nombre = base.subject || item.subject || item.title || '';
 
         let imagenes = [];
-        const urlsImg = base.image_urls ?? buscar(result, 'image_urls');
+        const urlsImg = base.image_urls ?? item.image_urls;
         if (Array.isArray(urlsImg)) imagenes = urlsImg.filter(Boolean);
         else if (typeof urlsImg === 'string') imagenes = urlsImg.split(';').filter(Boolean);
 
-        // 2) Galería (ae_media_dtos) por si base.image_urls viene vacío
-        if (!imagenes.length) {
-            const media = buscar(result, 'ae_media_dtos');
-            const lista = media?.ae_media_v_o || media?.medias || [];
-            for (const m of (Array.isArray(lista) ? lista : [])) {
-                if (m.media_url) imagenes.push(m.media_url);
-            }
-        }
-
-        // 3) SKUs / variantes — clave confirmada en la respuesta real
-        const skuDtos = buscar(result, 'ae_item_sku_info_dtos');
         let skus = [];
+        const skuDtos = item.ae_item_sku_info_dtos;
         if (skuDtos) {
             skus = Array.isArray(skuDtos.ae_item_sku_info_d_t_o) ? skuDtos.ae_item_sku_info_d_t_o
                  : Array.isArray(skuDtos.ae_item_sku_info_dto) ? skuDtos.ae_item_sku_info_dto
                  : Array.isArray(skuDtos) ? skuDtos : [];
         }
 
-        // 4) Precio: el menor entre variantes CON stock; si ninguna tiene, el menor global.
-        //    Campos reales: offer_sale_price (con descuento) y sku_price (lista).
-        const precioDe = s => {
-            const p = parseFloat(s.target_sale_price ?? s.offer_sale_price ?? s.sku_price ?? s.sale_price);
-            return Number.isNaN(p) ? 0 : p;
-        };
-        const stockDe = s => parseInt(s.sku_available_stock ?? s.total_available_quantity ?? s.available_quantity ?? 0, 10) || 0;
-        const conStock = skus.filter(s => stockDe(s) > 0);
-        const fuente = conStock.length ? conStock : skus;
         let precio = 0, moneda = 'MXN';
-        for (const s of fuente) {
-            const p = precioDe(s);
-            if (p > 0 && (precio === 0 || p < precio)) {
+        for (const s of skus) {
+            const p = parseFloat(s.target_sale_price ?? s.offer_sale_price ?? s.sale_price);
+            if (!Number.isNaN(p) && p > 0 && (precio === 0 || p < precio)) {
                 precio = p;
-                moneda = s.target_sale_price_currency || s.currency_code || moneda;
+                moneda = s.target_sale_price_currency || s.offer_sale_price_currency || moneda;
             }
         }
+        if (!precio) {
+            precio = parseFloat(item.target_sale_price || item.sale_price || item.offer_sale_price || 0) || 0;
+            moneda = item.target_sale_price_currency || 'MXN';
+        }
 
-        // 5) Stock total: suma de sku_available_stock de todas las variantes
         let stock = null;
-        const cantidades = skus.map(s => stockDe(s)).filter(n => !Number.isNaN(n));
+        const cantidades = skus
+            .map(s => parseInt(s.total_available_quantity ?? s.available_quantity ?? '', 10))
+            .filter(n => !Number.isNaN(n));
         if (cantidades.length) stock = cantidades.reduce((a, b) => a + b, 0);
-
-        // 6) Último recurso para imágenes: las fotos de las variantes (sku_image)
-        if (!imagenes.length) {
-            for (const s of skus) {
-                const props = s.ae_sku_property_dtos?.ae_sku_property_d_t_o
-                           || s.ae_sku_property_dtos?.ae_sku_property_d_t_o_s || [];
-                for (const pr of (Array.isArray(props) ? props : [])) {
-                    if (pr.sku_image && !imagenes.includes(pr.sku_image)) imagenes.push(pr.sku_image);
-                }
-            }
-        }
-
-        // 7) Variantes legibles (color/talla + precio + stock + foto) para uso futuro
-        const variantes = skus.map(s => {
-            const props = s.ae_sku_property_dtos?.ae_sku_property_d_t_o || [];
-            const atributos = (Array.isArray(props) ? props : [])
-                .map(pr => `${pr.sku_property_name || ''}: ${pr.sku_property_value || pr.property_value_definition_name || ''}`.trim())
-                .filter(Boolean);
-            return {
-                atributos,
-                precio: precioDe(s),
-                moneda: s.target_sale_price_currency || s.currency_code || 'MXN',
-                stock: stockDe(s),
-                imagen: (Array.isArray(props) ? props : [])[0]?.sku_image || ''
-            };
-        });
-
-        // 8) Descripción (si viene; la API a veces la sirve aparte)
-        const descripcion = base.detail || buscar(result, 'detail') || '';
-
-        // 9) Guarda: si a pesar de todo no hay nada útil, error honesto
-        if (!nombre && !skus.length && !imagenes.length) {
-            return res.status(400).json({
-                success: false,
-                error: 'AliExpress respondió pero sin datos útiles (posible producto restringido o no autorizado).',
-                raw: JSON.stringify(data).slice(0, 1500)
-            });
-        }
-        if (!nombre) nombre = 'Producto AliExpress ' + productId;
-
-        // 10) SAGA 4: precio de venta sugerido automático (margen + cashback configurados)
-        await cargarConfigPrecios();
-        const sugerido = calcularPrecioVenta({ costo: precio, margen: configPrecios.margenDefault, cashback: configPrecios.cashbackDefault });
-        const tablaMargenes = tablaPreciosPorMargen({ costo: precio, cashback: configPrecios.cashbackDefault });
 
         res.json({
             success: true,
-            data: { id: productId, nombre, precio, moneda, imagenes, descripcion, stock, variantes },
-            preciosSugeridos: {
-                margenUsado: configPrecios.margenDefault,
-                cashbackUsado: configPrecios.cashbackDefault,
-                descMayoreo6: configPrecios.descMayoreo6,
-                precioUnitario: sugerido.precioFinal,
-                precio6: sugerido.precio6,
-                gananciaRealPorPieza: sugerido.gananciaRealPorPieza,
-                tablaMargenes
+            data: {
+                id: productId,
+                nombre,
+                precio,
+                moneda,
+                imagenes,
+                descripcion: item.detail || '',
+                stock
             }
         });
     } catch (error) {
         console.error('❌ Error AliExpress:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
-});
-
-/* ============================================================
-   ========== SAGA 4 · RUTAS DE PRECIOS AUTOMÁTICOS ============
-   ============================================================ */
-
-// Configuración de precios (margen por defecto, cashback por defecto, desc. mayoreo)
-app.get('/api/admin/precios/config', verificarAdmin, async (req, res) => {
-    await cargarConfigPrecios();
-    res.json({
-        success: true,
-        config: { ...configPrecios },
-        listaMargenes: LISTA_MARGENES,
-        listaCashback: LISTA_CASHBACK,
-        reglas: {
-            cashbackBase: CASHBACK_BASE,
-            umbral10: UMBRAL_CASHBACK_10,
-            piezasMin10: QTY_MIN_CASHBACK_10,
-            umbral15: UMBRAL_CASHBACK_15,
-            maxProducto: CASHBACK_MAX_PRODUCTO
-        }
-    });
-});
-
-app.put('/api/admin/precios/config', verificarAdmin, async (req, res) => {
-    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
-    const { margenDefault, cashbackDefault, descMayoreo6 } = req.body || {};
-    await cargarConfigPrecios();
-    if (margenDefault !== undefined && !LISTA_MARGENES.includes(Number(margenDefault)))
-        return res.status(400).json({ success: false, error: `margenDefault debe ser uno de: ${LISTA_MARGENES.join(', ')}` });
-    if (cashbackDefault !== undefined && !LISTA_CASHBACK.includes(Number(cashbackDefault)))
-        return res.status(400).json({ success: false, error: `cashbackDefault debe ser uno de: ${LISTA_CASHBACK.join(', ')}` });
-    if (descMayoreo6 !== undefined) {
-        const d = Number(descMayoreo6);
-        if (!Number.isFinite(d) || d < 0 || d > 50) return res.status(400).json({ success: false, error: 'descMayoreo6 debe estar entre 0 y 50' });
-    }
-    const nueva = {
-        margenDefault: margenDefault !== undefined ? Number(margenDefault) : configPrecios.margenDefault,
-        cashbackDefault: cashbackDefault !== undefined ? Number(cashbackDefault) : configPrecios.cashbackDefault,
-        descMayoreo6: descMayoreo6 !== undefined ? Number(descMayoreo6) : configPrecios.descMayoreo6
-    };
-    try {
-        await firestore.collection('config').doc('precios').set(nueva, { merge: true });
-        configPrecios = nueva;
-        console.log(`💰 Config de precios actualizada: margen ${nueva.margenDefault}% · cashback ${nueva.cashbackDefault}% · mayoreo ${nueva.descMayoreo6}%`);
-        res.json({ success: true, config: nueva });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
-
-// Calculadora: costo + margen + cashback → precio de venta sugerido (con tabla comparativa)
-app.post('/api/admin/precios/calcular', verificarAdmin, async (req, res) => {
-    await cargarConfigPrecios();
-    const { costo, envio = 0, margen, cashback, descMayoreo6, conTabla = true } = req.body || {};
-    const c = parseFloat(costo);
-    if (!Number.isFinite(c) || c <= 0) return res.status(400).json({ success: false, error: 'Envía "costo" mayor a 0' });
-    const resultado = calcularPrecioVenta({
-        costo: c,
-        envio: parseFloat(envio) || 0,
-        margen: margen !== undefined ? margen : configPrecios.margenDefault,
-        cashback: cashback !== undefined ? cashback : configPrecios.cashbackDefault,
-        descMayoreo6: descMayoreo6 !== undefined ? descMayoreo6 : null
-    });
-    res.json({
-        success: true,
-        calculo: resultado,
-        tabla: conTabla ? tablaPreciosPorMargen({ costo: c, envio: parseFloat(envio) || 0, cashback: resultado.cashback, descMayoreo6: resultado.descMayoreo6 }) : undefined
-    });
-});
-
-// Recálculo masivo: aplica el margen a los precios de venta de productos existentes
-// (usa el campo precioProveedor de cada producto como costo)
-app.post('/api/admin/precios/aplicar-masivo', verificarAdmin, async (req, res) => {
-    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
-    const { ids, margen, cashback, descMayoreo6 } = req.body || {};
-    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ success: false, error: 'Envía "ids": [lista de ids de productos]' });
-    await cargarConfigPrecios();
-    const m = margen !== undefined ? Number(margen) : configPrecios.margenDefault;
-    if (!LISTA_MARGENES.includes(m)) return res.status(400).json({ success: false, error: `margen debe ser uno de: ${LISTA_MARGENES.join(', ')}` });
-    const cb = cashback !== undefined ? Number(cashback) : configPrecios.cashbackDefault;
-    if (!LISTA_CASHBACK.includes(cb)) return res.status(400).json({ success: false, error: `cashback debe ser uno de: ${LISTA_CASHBACK.join(', ')}` });
-    const resultados = [];
-    for (const id of ids.slice(0, 200)) {
-        try {
-            const ref = firestore.collection('productos').doc(String(id));
-            const docProd = await ref.get();
-            if (!docProd.exists) { resultados.push({ id, ok: false, error: 'No existe' }); continue; }
-            const prod = docProd.data();
-            const costo = parseFloat(prod.precioProveedor);
-            if (!Number.isFinite(costo) || costo <= 0) { resultados.push({ id, ok: false, error: 'Sin precioProveedor válido' }); continue; }
-            const r = calcularPrecioVenta({ costo, margen: m, cashback: cb, descMayoreo6: descMayoreo6 !== undefined ? descMayoreo6 : null });
-            await ref.update({
-                precioFinal: r.precioFinal,
-                precio6: r.precio6,
-                margen: m,
-                cashbackPromo: cb,
-                precioCalculado: true,
-                fechaRecalculo: new Date().toISOString()
-            });
-            resultados.push({ id, ok: true, costo, precioFinal: r.precioFinal, precio6: r.precio6, gananciaRealPorPieza: r.gananciaRealPorPieza });
-        } catch (e) {
-            resultados.push({ id, ok: false, error: e.message });
-        }
-    }
-    const ok = resultados.filter(r => r.ok).length;
-    console.log(`💰 Recálculo masivo: ${ok}/${resultados.length} productos (margen ${m}% · cashback ${cb}%)`);
-    try {
-        await firestore.collection('auditoria').add({
-            fecha: new Date().toISOString(),
-            admin: req.user?.email || 'Sistema',
-            accion: 'Recálculo de precios',
-            detalle: `Margen ${m}% · cashback ${cb}% · ${ok} productos actualizados`,
-            ip: req.ip
-        });
-    } catch (_) { /* la auditoría no debe romper la respuesta */ }
-    res.json({ success: true, margen: m, cashback: cb, actualizados: ok, fallidos: resultados.length - ok, resultados });
 });
 
 /* ========== EMAIL DE CAMPAÑAS (consumido por el panel admin del frontend) ========== */
@@ -4364,7 +3909,6 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🏢 Bonü Marketplace - RFC: CAGJ791031159`);
     console.log(`📧 bonu.marketplace@gmail.com | 📞 322 270 0732`);
     console.log('==================================================');
-    iniciarAutoreparador();
 });
 
 process.on('SIGTERM', () => {
@@ -4376,67 +3920,5 @@ process.on('SIGINT', () => {
     console.log('🛑 SIGINT recibido. Cerrando servidor...');
     server.close(() => process.exit(0));
 });
-
-/* ========== [AUTOREPARADOR BONU 2026-11-13] inicio — anti-sleep + blindaje de proceso ==========
- * Problema diagnosticado 2026-11-13: Render FREE duerme el servicio tras ~15 min sin tráfico
- * y al despertar tarda 23-60 s (cold start). El cliente percibe que "la página se cae".
- * Solución en 2 capas:
- *  1) Auto-ping cada KEEP_ALIVE_MIN minutos a /api/status -> el servicio NUNCA se duerme.
- *  2) uncaughtException / unhandledRejection capturados -> un error ya no mata el proceso
- *     (si el proceso muere, Render lo reinicia dormido y vuelve el cold start).
- * Config opcional en Render: KEEP_ALIVE_URL (url propia) y KEEP_ALIVE_MIN (min 5).
- */
-const AUTOREPARADOR = {
-    url: (process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL || 'https://bonu-backend.onrender.com').replace(/\/+$/, ''),
-    minutos: Math.max(5, parseInt(process.env.KEEP_ALIVE_MIN || '10', 10) || 10),
-    timer: null,
-    fallos: 0,
-    exito: 0
-};
-
-function autoreparadorPing() {
-    const t0 = Date.now();
-    const reportar = (ok, detalle) => {
-        if (ok) {
-            AUTOREPARADOR.fallos = 0;
-            AUTOREPARADOR.exito++;
-            console.log(`[AUTOREPARADOR] ping OK en ${Date.now() - t0}ms (total #${AUTOREPARADOR.exito})`);
-        } else {
-            AUTOREPARADOR.fallos++;
-            console.log(`[AUTOREPARADOR] ping FALLA #${AUTOREPARADOR.fallos}: ${detalle}`);
-        }
-    };
-    try {
-        if (typeof fetch === 'function') {
-            fetch(`${AUTOREPARADOR.url}/api/status`, { method: 'GET' })
-                .then(r => reportar(!!(r && r.status === 200), `HTTP ${r ? r.status : 'sin respuesta'}`))
-                .catch(e => reportar(false, e && e.message ? e.message : 'error de red'));
-        } else {
-            const req = https.get(`${AUTOREPARADOR.url}/api/status`, (res) => {
-                res.resume();
-                reportar(res.statusCode === 200, `HTTP ${res.statusCode}`);
-            });
-            req.on('error', (e) => reportar(false, e.message));
-            req.setTimeout(30000, () => req.destroy(new Error('timeout 30s')));
-        }
-    } catch (e) {
-        reportar(false, e.message);
-    }
-}
-
-function iniciarAutoreparador() {
-    if (AUTOREPARADOR.timer) return;
-    console.log(`[AUTOREPARADOR] ACTIVO - auto-ping cada ${AUTOREPARADOR.minutos} min a ${AUTOREPARADOR.url}/api/status (evita el sueño de Render y los cold starts)`);
-    autoreparadorPing();
-    AUTOREPARADOR.timer = setInterval(autoreparadorPing, AUTOREPARADOR.minutos * 60 * 1000);
-}
-
-process.on('uncaughtException', (err) => {
-    console.error('[AUTOREPARADOR] uncaughtException capturado - el servidor SIGUE VIVO:', err && err.stack ? err.stack : err);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('[AUTOREPARADOR] unhandledRejection capturado - el servidor SIGUE VIVO:', reason && reason.stack ? reason.stack : reason);
-});
-/* ========== [AUTOREPARADOR BONU 2026-11-13] fin ========== */
 
 module.exports = { app, io, emitNewOrder, emitPaymentFailed, emitLowStock, emitNewVendor };
