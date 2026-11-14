@@ -15,6 +15,9 @@ const socketIo = require('socket.io');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
+// [OG BONÜ] vista previa de productos para WhatsApp/Facebook/TikTok/Instagram
+const { registrar } = require('./og-bonu');
+registrar(app);
 
 /* ========== SEGURIDAD ========== */
 app.use(helmet({ 
