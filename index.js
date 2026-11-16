@@ -3622,6 +3622,8 @@ app.get('/og/producto/:id', async (req, res) => {
         res.redirect('https://xn--bon-joa.com'); 
     }
 });
+/* [FIX-OG 2026-11-17] Alias /p/:id — los enlaces viejos compartidos antes del fix siguen teniendo vista previa */
+app.get('/p/:id', (req, res) => res.redirect(301, `/og/producto/${encodeURIComponent(req.params.id)}`));
 /* ========== ALIEXPRESS DROPSHIPPING (API REAL) ========== */
 const AE_KEY = process.env.ALIEXPRESS_APP_KEY || '';
 const AE_SECRET = process.env.ALIEXPRESS_APP_SECRET || '';
