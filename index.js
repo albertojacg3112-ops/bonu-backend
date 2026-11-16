@@ -1941,6 +1941,17 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
         const claimsSnap = await firestore.collection('bonugift_claims').where('envioPendiente', '==', true).limit(TOPE).get();
         claimsSnap.forEach(d => { const x = d.data(); pendientes.push({ email: x.email, nombre: x.nombre || '', uid: x.uid || '', dinamica: ['facebook','whatsapp'].includes(x.dinamica) ? x.dinamica : 'facebook' }); });
 
+        /* [TODOS-SIN-CODIGO 2026-11-17] modo TODOS: con {todos:true} en el body se incluye a
+           TODO cliente registrado sin código, aunque nunca haya declarado dinámica (se registra
+           con dinamica 'registro'). Protección anti-doble-envío: si un correo ya tiene un
+           reclamo con código ENTREGADO (envioPendiente:false), no se le manda otro. */
+        const modoTodos = !!(req.body && req.body.todos);
+        const conCodigoEntregado = new Set();
+        try {
+            const claimsCod = await firestore.collection('bonugift_claims').get();
+            claimsCod.forEach(d => { const x = d.data(); if (x.codigo && x.envioPendiente === false && x.email) conCodigoEntregado.add(String(x.email).toLowerCase()); });
+        } catch (e) { console.warn('No se pudo leer bonugift_claims para anti-duplicados (sigo):', e.message); }
+
         if (pendientes.length < TOPE) {
             const cliSnap = await firestore.collection('clientes').limit(500).get();
             const yaEnLista = new Set(pendientes.map(p => String(p.email || '').toLowerCase()));
@@ -1948,15 +1959,16 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
                 const c = d.data();
                 const pb = c.promoBonuGift || {};
                 const declara = pb.dinamica || (pb.fb ? 'facebook' : '') || (pb.whatsapp ? 'whatsapp' : '');
-                if (declara && !pb.codigo && c.email && !yaEnLista.has(String(c.email).toLowerCase())) {
-                    pendientes.push({ email: c.email, nombre: c.nombre || '', uid: d.id, dinamica: ['facebook','whatsapp'].includes(declara) ? declara : 'facebook' });
+                const aplica = modoTodos ? (!pb.codigo && c.email) : (declara && !pb.codigo && c.email);
+                if (aplica && !yaEnLista.has(String(c.email).toLowerCase()) && !conCodigoEntregado.has(String(c.email).toLowerCase())) {
+                    pendientes.push({ email: c.email, nombre: c.nombre || '', uid: d.id, dinamica: ['facebook','whatsapp'].includes(declara) ? declara : (modoTodos ? 'registro' : 'facebook') });
                 }
             });
         }
 
         const total = pendientes.length;
-        if (!total) return res.json({ success: true, procesados: 0, enviados: 0, fallidos: 0, restantes: 0, mensaje: 'No hay registros pendientes: todos los que se registraron ya tienen su BonüGift.' });
-        if (!emailConfigurado || !emailTransporter) return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER/EMAIL_PASS). Agrégalas en Render → Environment y vuelve a dar clic.', pendientesDetectados: total });
+        if (!total) return res.json({ success: true, modoTodos: modoTodos, procesados: 0, enviados: 0, fallidos: 0, restantes: 0, mensaje: modoTodos ? 'No hay ningún cliente sin código: todos ya tienen su BonüGift asignada.' : 'No hay registros pendientes: todos los que se registraron ya tienen su BonüGift.' });
+        if (!emailConfigurado || !emailTransporter) return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER/EMAIL_PASS). Agrégalas en Render → Environment y vuelve a dar clic.', pendientesDetectados: total, modoTodos: modoTodos });
 
         let enviados = 0, fallidos = 0;
         const detalles = [];
@@ -1989,8 +2001,8 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
                 else { fallidos++; detalles.push({ email: p.email, codigo: codigo, error: r.error }); }
             } catch (e) { fallidos++; detalles.push({ email: p.email, error: e.message }); }
         }
-        waEnviarCallMeBot('📤 REENVÍO BONÜGIFT A PENDIENTES\n✅ Enviadas: ' + enviados + '\n⚠️ Fallidas: ' + fallidos + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-        res.json({ success: true, procesados: Math.min(total, TOPE), enviados: enviados, fallidos: fallidos, restantes: Math.max(0, total - Math.min(total, TOPE)), detalles: detalles });
+        waEnviarCallMeBot((modoTodos ? '👥 BONÜGIFT — ENVÍO A TODOS SIN CÓDIGO' : '📤 REENVÍO BONÜGIFT A PENDIENTES') + '\n✅ Enviadas: ' + enviados + '\n⚠️ Fallidas: ' + fallidos + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        res.json({ success: true, modoTodos: modoTodos, procesados: Math.min(total, TOPE), enviados: enviados, fallidos: fallidos, restantes: Math.max(0, total - Math.min(total, TOPE)), detalles: detalles });
     } catch (error) {
         console.error('❌ Error reenviar-pendientes:', error.message);
         res.status(500).json({ success: false, error: error.message });
