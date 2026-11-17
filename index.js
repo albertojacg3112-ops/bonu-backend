@@ -1710,13 +1710,13 @@ function correoBonuGiftHTMLServer(email, codigo, montoTxt, nombre) {
     <tr><td style="padding:16px 24px 4px 24px;text-align:center;"><img src="${BONUGIFT_IMG_CORREO}" alt="Bon&uuml;Gift ${montoTxt}" width="560" style="width:100%;max-width:560px;height:auto;border-radius:14px;border:2px solid #facc15;display:block;"></td></tr>
     <tr><td style="padding:14px 24px 4px 24px;text-align:center;"><p style="margin:0;color:#374151;font-size:14px;font-weight:700;">TU C&Oacute;DIGO DE ACTIVACI&Oacute;N — FREE CASH ${montoTxt}</p>
       <div style="margin:10px auto 0 auto;border:3px dashed #facc15;background:#fefce8;border-radius:14px;padding:12px 26px;display:inline-block;"><span style="color:#111827;font-size:26px;font-weight:800;letter-spacing:3px;">${sanitize(codigo)}</span></div>
-      <p style="margin:10px 0 0 0;color:#6b7280;font-size:12px;">Escr&iacute;belo tal cual en bon&uuml;.com (caja dorada debajo del buscador)</p></td></tr>
+      <p style="margin:10px 0 0 0;color:#6b7280;font-size:12px;">Tu Bon&uuml;Gift ya llega <b>activada</b>: tu saldo se ve al iniciar sesi&oacute;n. Si no aparece, escr&iacute;belo tal cual en bon&uuml;.com (caja dorada debajo del buscador)</p></td></tr>
     <tr><td style="padding:14px 28px;"><p style="margin:0;color:#111827;font-size:14px;font-weight:700;text-align:center;line-height:1.6;">BON&Uuml; TE ADELANTA TU AGUINALDO PARA QUE PAGUES PARTE DE TUS REGALOS NAVIDE&Ntilde;OS PARA TU FAMILIA, AMIGOS O CONOCIDOS.</p>
       <p style="margin:8px 0 0 0;color:#a16207;font-size:15px;font-weight:800;text-align:center;">&iexcl;DISFRUTA TU BON&Uuml;GIFT Y TU FREE CASH EN BON&Uuml;.COM!</p></td></tr>
     <tr><td style="padding:6px 24px 16px 24px;text-align:center;"><a href="${BONUGIFT_SITIO}" style="display:inline-block;background:#facc15;color:#111827;font-size:15px;font-weight:800;padding:13px 30px;border-radius:999px;text-decoration:none;">&#128722; ACTIVAR Y COMPRAR EN BON&Uuml;.COM</a></td></tr>
     <tr><td style="padding:0 28px 18px 28px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:12px;"><tr><td style="padding:14px 16px;">
       <p style="margin:0 0 6px 0;color:#111827;font-size:13px;font-weight:800;">&iquest;C&oacute;mo uso mi Bon&uuml;Gift? (3 pasos)</p>
-      <p style="margin:0;color:#4b5563;font-size:12.5px;line-height:1.7;">1&#65039;&#8419; Reg&iacute;strate en bon&uuml;.com y activa tu c&oacute;digo en la <b>caja dorada</b> debajo del buscador: tu Free Cash se suma a tu saldo al instante.<br>2&#65039;&#8419; Elige productos con el <b>&iacute;cono del regalo dorado &#127873;</b> y agr&eacute;alos a tu carrito.<br>3&#65039;&#8419; En el checkout paga <b>10/15/20/25%</b> con tu saldo Bon&uuml;Gift y el resto con tu tarjeta. &iexcl;Y ganas 5% de cashback en tu compra!</p>
+      <p style="margin:0;color:#4b5563;font-size:12.5px;line-height:1.7;">1&#65039;&#8419; Entra a bon&uuml;.com con tu correo (inicia sesi&oacute;n o reg&iacute;strate): tu Bon&uuml;Gift ya viene <b>activada</b> y tu Free Cash ya est&aacute; en tu saldo. Si no lo ves, pega tu c&oacute;digo en la <b>caja dorada</b> debajo del buscador.<br>2&#65039;&#8419; Elige productos con el <b>&iacute;cono del regalo dorado &#127873;</b> y agr&eacute;alos a tu carrito.<br>3&#65039;&#8419; En el checkout paga <b>10/15/20/25%</b> con tu saldo Bon&uuml;Gift y el resto con tu tarjeta. &iexcl;Y ganas 5% de cashback en tu compra!</p>
     </td></tr></table></td></tr>
     <tr><td style="padding:0 28px 22px 28px;"><p style="margin:0;color:#6b7280;font-size:11px;line-height:1.7;text-align:center;background:#f3f4f6;border-radius:10px;padding:10px 12px;">T&eacute;rminos: tu c&oacute;digo es <b>v&aacute;lido solo 1 vez</b>, <b>no es transferible</b> ni acumulable con otras promociones u ofertas. Aplica &uacute;nicamente en productos marcados con el <b>&iacute;cono del regalo dorado &#127873;</b>. Vigencia: <b>15 d&iacute;as naturales a partir de la activaci&oacute;n</b> de tu c&oacute;digo. Promoci&oacute;n vigente hasta el <b>${BONUGIFT_PROMO_FIN}</b>. Cashback y saldo Bon&uuml;Gift aplican seg&uacute;n la pol&iacute;tica de bon&uuml;.com.</p></td></tr>
     <tr><td style="background:#0a0a0a;padding:14px 24px;text-align:center;"><p style="margin:0;color:#facc15;font-size:12px;font-weight:700;">bon&uuml; te adelanta tu aguinaldo &#127876;</p><p style="margin:4px 0 0 0;color:#9ca3af;font-size:11px;">bon&uuml;.com · Puerto Vallarta, Jal. · Env&iacute;os a todo M&eacute;xico</p></td></tr>
@@ -1908,23 +1908,44 @@ app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
         /* [FIX-ENVIO 2026-11-17] ORDEN CORRECTO: guardar PRIMERO el código y el claim, responder AL INSTANTE
            y enviar el correo en segundo plano con reintentos. Antes se enviaba el correo primero: si el SMTP
            fallaba, el cliente se quedaba sin código, sin registro y sin tarjeta — nunca llegaba nada.
-           Ahora el código EXISTE SIEMPRE, se muestra en pantalla y el correo sale por separado. */
+           Ahora el código EXISTE SIEMPRE, se muestra en pantalla y el correo sale por separado.
+           [AUTO-ACTIVA 2026-11-18] Si el registro trae su cuenta (uid), el código queda ACTIVADO EN EL
+           SERVIDOR y el saldo $1,000 se acredita AL MOMENTO: el cliente no depende de pegar el código
+           ni de su conexión (antes la activación era una transacción en su navegador y algunos fallaban). */
         const montoTxt = formatCurrency(1000);
+        const ahoraISO = new Date().toISOString();
+        const autoActiva = !!uid;
         await firestore.collection('bonugift').doc(codigo).set({
-            codigo: codigo, monto: 1000, estado: 'disponible', lote: 'PROMO-NAVIDAD2026',
-            creadoEn: new Date().toISOString(), activadoPor: null,
-            activadoEmail: null, activadoEn: null, dinamica: dinamica, reclamadoEmail: email
+            codigo: codigo, monto: 1000, estado: autoActiva ? 'activado' : 'disponible', lote: 'PROMO-NAVIDAD2026',
+            creadoEn: ahoraISO, activadoPor: autoActiva ? uid : null,
+            activadoEmail: autoActiva ? email : null, activadoEn: autoActiva ? ahoraISO : null,
+            autoActivada: autoActiva ? true : null, dinamica: dinamica, reclamadoEmail: email
         });
         await claimRef.set({
             email: email, nombre: nombre, uid: uid || null, dinamica: dinamica,
             telefono: telefono || null, direccion: direccion || null,
-            codigo: codigo, monto: 1000, fecha: new Date().toISOString(),
+            codigo: codigo, monto: 1000, fecha: ahoraISO,
+            autoActivada: autoActiva ? true : null, saldoAcreditado: autoActiva ? 1000 : null,
             envioPendiente: !(enviarCorreoRegistro && emailConfigurado && emailTransporter)
         });
-        console.log(`🎁 BonüGift auto ${codigo} → ${email} (origen: ${dinamica}${telefono ? ', tel: ' + telefono : ''})`);
+        if (autoActiva) {
+            try {
+                await firestore.collection('clientes').doc(uid).set({
+                    cashbackBalance: admin.firestore.FieldValue.increment(1000),
+                    promoBonuGift: { codigo: codigo, codigoEnviadoEn: ahoraISO }
+                }, { merge: true });
+            } catch (e) {
+                /* Si no se pudo acreditar el saldo, el código vuelve a 'disponible' para que el
+                   reenvío masivo (👥) lo active después y NADIE se quede sin su saldo. */
+                console.warn('No se pudo acreditar saldo a ' + email + ' (código vuelve a disponible):', e.message);
+                await firestore.collection('bonugift').doc(codigo).set({ estado: 'disponible', activadoPor: null, activadoEmail: null, activadoEn: null, autoActivada: null }, { merge: true }).catch(() => {});
+                await claimRef.set({ autoActivada: false, saldoAcreditado: null, envioPendiente: true }, { merge: true }).catch(() => {});
+            }
+        }
+        console.log(`🎁 BonüGift auto ${codigo} → ${email} (origen: ${dinamica}${telefono ? ', tel: ' + telefono : ''}${autoActiva ? ', ACTIVADA automática + saldo acreditado' : ''})`);
 
         /* [REGISTRO-DATOS 2026-11-18] Aviso a Alberto con la base de publicidad (WhatsApp CallMeBot siempre activo) */
-        const avisoWhats = () => waEnviarCallMeBot('🎁 BONÜGIFT ASIGNADA — NUEVO REGISTRO EN BONÜ.COM\n\n🎯 Origen: ' + (dinamica === 'registro' ? 'Registro directo (sin dinámica)' : dinamica === 'facebook' ? '📘 Facebook' : dinamica === 'tiktok' ? '🎵 TikTok' : '💬 Canal de WhatsApp') + '\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(email, 60) + (telefono ? '\n📱 ' + waSanitizar(telefono, 25) : '') + (direccion ? '\n🏠 ' + waSanitizar(direccion, 140) : '') + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + (enviarCorreoRegistro ? '' : '\n⏳ Correo: pendiente (envío apagado, se manda con el reenvío masivo)') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        const avisoWhats = () => waEnviarCallMeBot('🎁 BONÜGIFT ASIGNADA — NUEVO REGISTRO EN BONÜ.COM\n\n🎯 Origen: ' + (dinamica === 'registro' ? 'Registro directo (sin dinámica)' : dinamica === 'facebook' ? '📘 Facebook' : dinamica === 'tiktok' ? '🎵 TikTok' : '💬 Canal de WhatsApp') + '\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(email, 60) + (telefono ? '\n📱 ' + waSanitizar(telefono, 25) : '') + (direccion ? '\n🏠 ' + waSanitizar(direccion, 140) : '') + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + (autoActiva ? '\n✅ ACTIVADA automática: saldo $1,000 ya acreditado en su cuenta' : '\n⏳ Sin cuenta vinculada: se activa al pegar el código') + (enviarCorreoRegistro ? '' : '\n⏳ Correo: pendiente (envío apagado, se manda con el reenvío masivo)') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
 
         if (enviarCorreoRegistro && emailConfigurado && emailTransporter) {
             /* Segundo plano: no frena el registro ni depende de que el SMTP responda rápido */
@@ -1943,11 +1964,11 @@ app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
                     console.error('📧 BonüGift ' + codigo + ' queda PENDIENTE de envío a ' + email + ': ' + r.error);
                 }
             })().catch(() => {});
-            res.json({ success: true, codigo: codigo, emailEnProceso: true });
+            res.json({ success: true, codigo: codigo, emailEnProceso: true, autoActivada: autoActiva });
         } else {
             /* [REGISTRO-DATOS 2026-11-18] Correos pausados: aviso inmediato a Alberto + código pendiente para el envío futuro */
             avisoWhats();
-            res.json({ success: true, codigo: codigo, emailEnProceso: false, correoPendiente: true, aviso: 'Código entregado en pantalla y guardado; el correo se enviará con las promociones futuras.' });
+            res.json({ success: true, codigo: codigo, emailEnProceso: false, correoPendiente: true, autoActivada: autoActiva, aviso: 'Código entregado en pantalla y guardado; el correo se enviará con las promociones futuras.' });
         }
     } catch (error) {
         console.error('❌ Error bonugift-claim:', error.message);
@@ -2009,13 +2030,13 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
         }
 
         const total = pendientes.length;
-        if (!total) return res.json({ success: true, modoTodos: modoTodos, procesados: 0, enviados: 0, fallidos: 0, restantes: 0, mensaje: modoTodos ? 'No hay ningún cliente sin código: todos ya tienen su BonüGift asignada.' : 'No hay registros pendientes: todos los que se registraron ya tienen su BonüGift.' });
+        if (!total) return res.json({ success: true, modoTodos: modoTodos, procesados: 0, enviados: 0, fallidos: 0, restantes: 0, autoActivadas: 0, mensaje: modoTodos ? 'No hay ningún cliente sin código: todos ya tienen su BonüGift asignada.' : 'No hay nadie pendiente: todos los que se registraron ya tienen su BonüGift ACTIVADA con su saldo.' });
         /* [ATORADOS 2026-11-18] El correo YA NO es requisito: aunque Gmail esté sin configurar (EMAIL_PASS),
            los códigos se crean/reusan igual y quedan GUARDADOS para mandarse por WhatsApp desde
            el panel → 🆘 Atorados. Solo si el correo está disponible se intenta el envío por email. */
         const correoDisponible = !!(emailConfigurado && emailTransporter);
 
-        let enviados = 0, fallidos = 0, preparados = 0;
+        let enviados = 0, fallidos = 0, preparados = 0, autoActivadas = 0;
         const detalles = [];
         for (const p of pendientes.slice(0, TOPE)) {
             try {
@@ -2030,20 +2051,49 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
                 }
                 if (!codigo) { fallidos++; detalles.push({ email: p.email, error: 'no se pudo generar el código' }); continue; }
                 const montoTxt = formatCurrency(1000);
+                /* [AUTO-ACTIVA 2026-11-18] Si sabemos su cuenta (uid) y el código NO está activado,
+                   queda ACTIVADO EN EL SERVIDOR y su saldo $1,000 se acredita AL MOMENTO: el cliente
+                   ya puede comprar sin pegar nada. Si ya estaba activado, no se acredita dos veces. */
+                let yaActivado = false;
+                try {
+                    const bgAhora = await firestore.collection('bonugift').doc(codigo).get();
+                    yaActivado = bgAhora.exists && bgAhora.data().estado === 'activado';
+                } catch (e) { console.warn('No se pudo releer bonugift ' + codigo + ' (sigo):', e.message); }
+                const autoActiva = !!p.uid && !yaActivado;
                 await firestore.collection('bonugift').doc(codigo).set({
-                    codigo: codigo, monto: 1000, estado: 'disponible', lote: 'PROMO-NAVIDAD2026',
-                    creadoEn: new Date().toISOString(), activadoPor: null, activadoEmail: null, activadoEn: null,
+                    codigo: codigo, monto: 1000, estado: autoActiva ? 'activado' : 'disponible', lote: 'PROMO-NAVIDAD2026',
+                    creadoEn: new Date().toISOString(),
+                    activadoPor: autoActiva ? (p.uid || null) : null, activadoEmail: autoActiva ? (p.email || null) : null, activadoEn: autoActiva ? new Date().toISOString() : null,
+                    autoActivada: autoActiva ? true : null,
                     dinamica: p.dinamica, reclamadoEmail: p.email, reenviadoPor: (req.user && req.user.email) || 'admin'
                 }, { merge: true });
                 const cRef = firestore.collection('bonugift_claims').doc(String(p.email).replace(/[^a-z0-9@._-]/g, '_'));
                 const claimData = {
                     email: p.email, nombre: p.nombre, uid: p.uid || null, dinamica: p.dinamica,
                     telefono: p.telefono || null, direccion: p.direccion || null,
-                    codigo: codigo, monto: 1000, envioPendiente: true,
+                    codigo: codigo, monto: 1000,
+                    autoActivada: autoActiva ? true : null, saldoAcreditado: autoActiva ? 1000 : null,
+                    envioPendiente: yaActivado ? false : true,
                     reenviadoEn: new Date().toISOString()
                 };
                 if (!p.codigo) claimData.fecha = new Date().toISOString();
                 await cRef.set(claimData, { merge: true });
+                if (autoActiva) {
+                    try {
+                        await firestore.collection('clientes').doc(p.uid).set({
+                            cashbackBalance: admin.firestore.FieldValue.increment(1000),
+                            promoBonuGift: { codigo: codigo, codigoEnviadoEn: new Date().toISOString() }
+                        }, { merge: true });
+                        autoActivadas++;
+                    } catch (e) {
+                        /* Si el crédito del saldo falla, el código vuelve a 'disponible' para no perder a nadie */
+                        console.warn('No se pudo acreditar saldo a ' + p.email + ' (código vuelve a disponible):', e.message);
+                        await firestore.collection('bonugift').doc(codigo).set({ estado: 'disponible', activadoPor: null, activadoEmail: null, activadoEn: null, autoActivada: null }, { merge: true }).catch(() => {});
+                        await cRef.set({ autoActivada: false, saldoAcreditado: null, envioPendiente: true }, { merge: true }).catch(() => {});
+                        fallidos++; detalles.push({ email: p.email, codigo: codigo, error: 'no se pudo acreditar el saldo: ' + e.message });
+                        continue;
+                    }
+                }
                 if (p.uid) {
                     await firestore.collection('clientes').doc(p.uid).set({ promoBonuGift: { codigo: codigo, codigoEnviadoEn: new Date().toISOString() } }, { merge: true }).catch(() => {});
                 }
@@ -2051,14 +2101,17 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
                     const r = await enviarEmailBonuGiftReintentos(p.email, codigo, montoTxt, (p.nombre || '').split(' ')[0]);
                     if (r.ok) { enviados++; await cRef.set({ envioPendiente: false }, { merge: true }).catch(() => {}); }
                     else { fallidos++; detalles.push({ email: p.email, codigo: codigo, error: r.error }); }
+                } else if (autoActiva) {
+                    /* Activada automática: no hace falta que Alberto mande nada — su saldo ya quedó */
+                    detalles.push({ email: p.email, codigo: codigo, ok: true, detalle: 'Activada automática: saldo $1,000 ya acreditado en su cuenta' });
                 } else {
                     preparados++;
                     detalles.push({ email: p.email, codigo: codigo, error: 'Correo apagado (EMAIL_PASS) — mándalo por WhatsApp desde 🆘 Atorados' });
                 }
             } catch (e) { fallidos++; detalles.push({ email: p.email, error: e.message }); }
         }
-        waEnviarCallMeBot((modoTodos ? '👥 BONÜGIFT — ENVÍO A TODOS SIN CÓDIGO' : '📤 REENVÍO BONÜGIFT A PENDIENTES') + '\n✅ Correos enviados: ' + enviados + (preparados ? '\n🆘 Listos para WhatsApp: ' + preparados : '') + '\n⚠️ Fallidas: ' + fallidos + (correoDisponible ? '' : '\n📴 Correo apagado: códigos guardados, mándalos con 🆘 Atorados') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-        res.json({ success: true, modoTodos: modoTodos, procesados: Math.min(total, TOPE), enviados: enviados, fallidos: fallidos, preparados: preparados, correoApagado: !correoDisponible, restantes: Math.max(0, total - Math.min(total, TOPE)), detalles: detalles });
+        waEnviarCallMeBot((modoTodos ? '👥 BONÜGIFT — ENVÍO A TODOS SIN CÓDIGO' : '📤 REENVÍO BONÜGIFT A PENDIENTES') + '\n✅ Correos enviados: ' + enviados + '\n⚡ Activadas automáticas (saldo acreditado): ' + autoActivadas + (preparados ? '\n🆘 Listos para WhatsApp: ' + preparados : '') + '\n⚠️ Fallidas: ' + fallidos + (correoDisponible ? '' : '\n📴 Correo apagado: códigos guardados, mándalos con 🆘 Atorados') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        res.json({ success: true, modoTodos: modoTodos, procesados: Math.min(total, TOPE), enviados: enviados, fallidos: fallidos, preparados: preparados, autoActivadas: autoActivadas, correoApagado: !correoDisponible, restantes: Math.max(0, total - Math.min(total, TOPE)), detalles: detalles });
     } catch (error) {
         console.error('❌ Error reenviar-pendientes:', error.message);
         res.status(500).json({ success: false, error: error.message });
@@ -2119,6 +2172,143 @@ app.get('/api/bonugift-atorados', verificarAdmin, async (req, res) => {
         res.json({ success: true, total: lista.length, lista: lista.slice(0, 400) });
     } catch (e) {
         console.error('❌ Error bonugift-atorados:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/* ========== [AUTO-TODO 2026-11-18] ACTIVACIÓN 100% EN EL SERVIDOR ==========
+   CAUSA DE LAS 8 SIN ACTIVARSE: la activación de respaldo se hacía con una transacción
+   DEL NAVEGADOR sobre `bonugift` y `clientes`, y las reglas de seguridad de Firestore
+   la bloquean ("Missing or insufficient permissions" al ESCRIBIR): el código quedaba
+   'disponible' para siempre aunque el cliente estuviera registrado.
+   SOLUCIÓN: el cliente pide esta ruta y la SDK de Admin (que ignora esas reglas) activa
+   el código y acredita el saldo AQUÍ. Solo activa códigos VINCULADOS al propio cliente
+   (su reclamo, su correo o su doc de cliente): nadie puede activar el código de otro
+   ni códigos de inventario sin asignar. Las de $2,000 siguen pidiendo dirección EUA. */
+function bgVinculoPropio(code, email, uid, claimData, cliData) {
+    const em = String(email || '').toLowerCase();
+    if (code.reclamadoEmail && em && String(code.reclamadoEmail).toLowerCase() === em) return true;
+    if (claimData && claimData.codigo && String(claimData.codigo).toUpperCase() === String(code.codigo || '').toUpperCase()) return true;
+    if (cliData && (cliData.promoBonuGift || {}).codigo && String((cliData.promoBonuGift || {}).codigo).toUpperCase() === String(code.codigo || '').toUpperCase()) return true;
+    return false;
+}
+app.post('/api/bonugift-activar', claimGiftLimiter, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const b = req.body || {};
+        const codigo = String(b.codigo || '').trim().toUpperCase().replace(/\s+/g, '');
+        const email = String(b.email || '').trim().toLowerCase();
+        let uid = String(b.uid || '').trim().substring(0, 64);
+        if (!codigo) return res.status(400).json({ success: false, error: 'Falta el código' });
+        if (!uid && !email) return res.status(400).json({ success: false, error: 'Inicia sesión para activar tu BonüGift' });
+        const claimId = email ? email.replace(/[^a-z0-9@._-]/g, '_') : null;
+        const [bgSnap, claimSnap, cliSnap] = await Promise.all([
+            firestore.collection('bonugift').doc(codigo).get(),
+            claimId ? firestore.collection('bonugift_claims').doc(claimId).get().catch(() => null) : Promise.resolve(null),
+            uid ? firestore.collection('clientes').doc(uid).get().catch(() => null) : Promise.resolve(null)
+        ]);
+        if (!bgSnap.exists) return res.status(404).json({ success: false, error: 'Ese código no existe. Revisa que esté bien escrito.' });
+        const code = Object.assign({ codigo: codigo }, bgSnap.data() || {});
+        const claimData = (claimSnap && claimSnap.exists) ? claimSnap.data() : null;
+        const cliData = (cliSnap && cliSnap.exists) ? cliSnap.data() : null;
+        if (!uid && claimData && claimData.uid) uid = String(claimData.uid).substring(0, 64);
+        /* Ya activada: si es SU cuenta, es la activación automática del registro — OK sin doble crédito */
+        if (code.estado === 'activado') {
+            const propioYa = (code.activadoPor && code.activadoPor === uid)
+                || (code.activadoEmail && email && String(code.activadoEmail).toLowerCase() === email)
+                || bgVinculoPropio(code, email, uid, claimData, cliData);
+            if (!propioYa) return res.status(403).json({ success: false, error: 'Ese código ya fue activado por otra cuenta.' });
+            return res.json({ success: true, codigo: codigo, monto: code.monto, yaEstaba: true });
+        }
+        if (!bgVinculoPropio(code, email, uid, claimData, cliData)) {
+            return res.status(403).json({ success: false, error: 'Este código no está asignado a tu cuenta. Escríbenos por WhatsApp y lo conectamos.' });
+        }
+        if (Number(code.monto) === 2000 && !(b.direccionEUA && typeof b.direccionEUA === 'object' && b.direccionEUA.pais)) {
+            return res.json({ success: false, needsEUA: true, error: 'Las BonüGift de $2,000 MXN se activan solo con dirección en EUA.' });
+        }
+        const montoCred = Number(code.monto) > 0 ? Number(code.monto) : 1000;
+        await firestore.runTransaction(async (tx) => {
+            const re = await tx.get(bgSnap.ref);
+            if (!re.exists) throw new Error('Ese código no existe.');
+            const d2 = re.data() || {};
+            if (d2.estado === 'activado' && !((d2.activadoPor && d2.activadoPor === uid) || (d2.activadoEmail && email && String(d2.activadoEmail).toLowerCase() === email))) {
+                throw new Error('Ese código ya fue activado por otra cuenta.');
+            }
+            const activarAhora = d2.estado !== 'activado';
+            tx.update(bgSnap.ref, Object.assign({
+                estado: 'activado',
+                activadoPor: d2.activadoPor || uid || null,
+                activadoEmail: d2.activadoEmail || email || null,
+                activadoEn: d2.activadoEn || new Date().toISOString(),
+                autoActivada: true
+            }, b.direccionEUA ? { direccion: b.direccionEUA } : {}));
+            /* Crédito UNA sola vez: solo si esta pasada lo activó */
+            if (activarAhora && uid) {
+                tx.set(firestore.collection('clientes').doc(uid), { cashbackBalance: admin.firestore.FieldValue.increment(montoCred) }, { merge: true });
+            }
+            if (activarAhora && claimId) {
+                tx.set(firestore.collection('bonugift_claims').doc(claimId), { autoActivada: true, saldoAcreditado: montoCred, envioPendiente: false }, { merge: true });
+            }
+        });
+        console.log('⚡ BonüGift ' + codigo + ' ACTIVADA vía servidor para ' + (email || uid) + ' (saldo +' + montoCred + ')');
+        res.json({ success: true, codigo: codigo, monto: code.monto, yaEstaba: false, saldoAcreditado: montoCred });
+    } catch (e) {
+        console.error('❌ Error bonugift-activar:', e.message);
+        res.status(400).json({ success: false, error: e.message });
+    }
+});
+
+/* ========== [AUTO-TODO 2026-11-18] BOTÓN ⚡ DEL PANEL: ACTIVAR TODAS LAS PENDIENTES ==========
+   Busca TODO código 'disponible' que YA TENGA DUEÑO (aparece en bonugift_claims o en
+   clientes.promoBonuGift.codigo) y lo activa con transacción: estado 'activado' + saldo
+   $1,000 acreditado UNA SOLA VEZ a su cuenta. Los códigos sin dueño (inventario sin
+   asignar) NO se tocan. Arregla de una sola pasada las atoradas de la lista 🆘. */
+app.post('/api/bonugift-activar-todas', giftEmailLimiter, verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const [bgSnap, claimsSnap, cliSnap] = await Promise.all([
+            firestore.collection('bonugift').limit(1000).get(),
+            firestore.collection('bonugift_claims').get(),
+            firestore.collection('clientes').limit(800).get()
+        ]);
+        /* Dueño por código: primero el reclamo del registro (email+uid), luego el doc de cliente */
+        const duenioPorCodigo = new Map();
+        claimsSnap.forEach(d => { const x = d.data() || {}; if (x.codigo) duenioPorCodigo.set(String(x.codigo).toUpperCase(), { email: x.email || '', uid: x.uid || '', nombre: x.nombre || '' }); });
+        cliSnap.forEach(d => { const c = d.data() || {}; const cod = (c.promoBonuGift || {}).codigo; if (cod && !duenioPorCodigo.has(String(cod).toUpperCase())) duenioPorCodigo.set(String(cod).toUpperCase(), { email: c.email || '', uid: d.id, nombre: c.nombre || '' }); });
+        const activadas = [], saltadas = [], fallidas = [];
+        let nSalt = 0, nFall = 0;
+        for (const docB of bgSnap.docs) {
+            const code = docB.data() || {};
+            if (code.estado === 'activado') continue;
+            const duenio = duenioPorCodigo.get(String(docB.id).toUpperCase()) || null;
+            if (!duenio || (!duenio.uid && !duenio.email)) {
+                nSalt++;
+                if (saltadas.length < 60) saltadas.push({ codigo: docB.id, motivo: 'sin dueño conocido (inventario sin asignar)' });
+                continue;
+            }
+            try {
+                await firestore.runTransaction(async (tx) => {
+                    const re = await tx.get(docB.ref);
+                    if (!re.exists) throw new Error('ya no existe');
+                    const d2 = re.data() || {};
+                    if (d2.estado === 'activado') throw new Error('ya estaba activada');
+                    const montoCred = Number(d2.monto) > 0 ? Number(d2.monto) : 1000;
+                    tx.update(docB.ref, { estado: 'activado', activadoPor: duenio.uid || null, activadoEmail: duenio.email || null, activadoEn: new Date().toISOString(), autoActivada: true });
+                    if (duenio.uid) tx.set(firestore.collection('clientes').doc(duenio.uid), { cashbackBalance: admin.firestore.FieldValue.increment(montoCred) }, { merge: true });
+                    const claimId = String(duenio.email || '').toLowerCase().replace(/[^a-z0-9@._-]/g, '_');
+                    if (claimId) tx.set(firestore.collection('bonugift_claims').doc(claimId), { codigo: docB.id, monto: montoCred, autoActivada: true, saldoAcreditado: montoCred, envioPendiente: false }, { merge: true });
+                });
+                if (activadas.length < 60) activadas.push({ codigo: docB.id, email: duenio.email, uid: duenio.uid });
+            } catch (e2) {
+                if (/ya estaba activada/.test(String(e2.message))) { nSalt++; if (saltadas.length < 60) saltadas.push({ codigo: docB.id, motivo: 'ya estaba activada' }); }
+                else { nFall++; if (fallidas.length < 60) fallidas.push({ codigo: docB.id, email: duenio.email, error: e2.message }); }
+            }
+        }
+        waEnviarCallMeBot('⚡ BONÜGIFT — ACTIVACIÓN MASIVA DESDE EL PANEL\n✅ Activadas ahora: ' + activadas.length + ' (saldo acreditado a cada cuenta)\n⏭️ Omitidas: ' + nSalt + ' (inventario sin dueño o ya activadas)\n⚠️ Fallidas: ' + nFall + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        console.log('⚡ activar-todas: ' + activadas.length + ' activadas, ' + nSalt + ' omitidas, ' + nFall + ' fallidas');
+        res.json({ success: true, totalActivadas: activadas.length, activadas: activadas, totalSaltadas: nSalt, saltadas: saltadas, totalFallidas: nFall, fallidas: fallidas });
+    } catch (e) {
+        console.error('❌ Error bonugift-activar-todas:', e.message);
         res.status(500).json({ success: false, error: e.message });
     }
 });
