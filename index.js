@@ -2065,6 +2065,64 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
     }
 });
 
+/* ========== [PANEL-SERVIDOR 2026-11-18] DATOS DEL PANEL BONÜGIFT LEÍDOS POR EL SERVIDOR ==========
+   Las reglas de seguridad de Firestore bloquean las lecturas directas del navegador
+   ("Missing or insufficient permissions") al abrir 🆘 Atorados o la tabla de participantes.
+   El servidor usa la SDK de Admin, que NO depende de esas reglas: el panel pide estos
+   datos con el token de admin y muestra la lista igual que siempre. */
+app.get('/api/bonugift-panel-promo', verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const [cliSnap, bgSnap] = await Promise.all([
+            firestore.collection('clientes').limit(800).get(),
+            firestore.collection('bonugift').limit(500).get()
+        ]);
+        const clientes = [];
+        cliSnap.forEach(d => clientes.push(Object.assign({ uid: d.id }, d.data())));
+        const codigos = [];
+        bgSnap.forEach(d => codigos.push(Object.assign({ id: d.id }, d.data())));
+        res.json({ success: true, clientes: clientes, codigos: codigos });
+    } catch (e) {
+        console.error('❌ Error bonugift-panel-promo:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.get('/api/bonugift-atorados', verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const [claimsSnap, cliSnap, bgSnap] = await Promise.all([
+            firestore.collection('bonugift_claims').get(),
+            firestore.collection('clientes').limit(800).get(),
+            firestore.collection('bonugift').limit(1000).get()
+        ]);
+        const estadoCod = {};
+        bgSnap.forEach(d => { estadoCod[d.id] = (d.data() || {}).estado || ''; });
+        const reclamoEmails = new Set();
+        const lista = [];
+        claimsSnap.forEach(d => {
+            const x = d.data() || {};
+            if (x.email) reclamoEmails.add(String(x.email).toLowerCase());
+            const cod = x.codigo || '';
+            /* ya activó su regalo: no está atorado, no se lista */
+            if (cod && estadoCod[cod] === 'activado') return;
+            lista.push({ fuente: 'registro', nombre: x.nombre || '', email: x.email || '', telefono: x.telefono || '', direccion: x.direccion || '', codigo: cod, estado: cod ? (estadoCod[cod] || 'disponible') : '', envioPendiente: x.envioPendiente !== false, fecha: x.fecha || '' });
+        });
+        cliSnap.forEach(d => {
+            const c = d.data() || {};
+            const em = String(c.email || '').toLowerCase();
+            if (!em || reclamoEmails.has(em)) return;
+            if ((c.promoBonuGift || {}).codigo) return;
+            lista.push({ fuente: 'cliente', nombre: c.nombre || '', email: c.email || '', telefono: c.telefono || '', direccion: (typeof c.direccion === 'string' ? c.direccion : ''), codigo: '', estado: '', envioPendiente: true, fecha: c.fechaRegistro || '' });
+        });
+        lista.sort((a, b) => ((b.codigo ? 1 : 0) - (a.codigo ? 1 : 0)) || String(b.fecha || '').localeCompare(String(a.fecha || '')));
+        res.json({ success: true, total: lista.length, lista: lista.slice(0, 400) });
+    } catch (e) {
+        console.error('❌ Error bonugift-atorados:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 /* Aviso admin (mensaje libre) — protegido con token de administrador */
 app.post('/api/whatsapp', waLimiter, verificarAdmin, async (req, res) => {
     try {
