@@ -1850,7 +1850,7 @@ app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
         const uid = String(b.uid || '').trim().substring(0, 64);
         const dinamica = String(b.dinamica || '').trim().toLowerCase();
         if (!isValidEmail(email)) return res.status(400).json({ success: false, error: 'Correo inválido' });
-        if (!['facebook', 'whatsapp'].includes(dinamica)) return res.status(400).json({ success: false, error: 'Dinámica inválida (usa facebook o whatsapp)' });
+        if (!['facebook', 'whatsapp', 'tiktok'].includes(dinamica)) return res.status(400).json({ success: false, error: 'Dinámica inválida (usa facebook, whatsapp o tiktok)' });
 
         /* 1) Un solo código por correo */
         const claimRef = firestore.collection('bonugift_claims').doc(email.replace(/[^a-z0-9@._-]/g, '_'));
@@ -1898,7 +1898,7 @@ app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
         });
         console.log(`🎁 BonüGift auto ${codigo} → ${email} (dinámica: ${dinamica})`);
 
-        const avisoWhats = () => waEnviarCallMeBot('🎁 BONÜGIFT AUTOMÁTICA — DINÁMICA NAVIDAD\n\n🎯 Dinámica: ' + (dinamica === 'facebook' ? '📘 Facebook (seguir + like)' : '💬 Canal de WhatsApp') + '\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(email, 60) + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        const avisoWhats = () => waEnviarCallMeBot('🎁 BONÜGIFT AUTOMÁTICA — DINÁMICA NAVIDAD\n\n🎯 Dinámica: ' + (dinamica === 'facebook' ? '📘 Facebook (seguir + like)' : dinamica === 'tiktok' ? '🎵 TikTok (seguir + like)' : '💬 Canal de WhatsApp') + '\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(email, 60) + '\n💳 Código: ' + codigo + '\n💵 Monto: ' + montoTxt + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
 
         if (emailConfigurado && emailTransporter) {
             /* Segundo plano: no frena el registro ni depende de que el SMTP responda rápido */
@@ -1926,7 +1926,7 @@ app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 });
-function dinamicaTxt(d){ return d === 'facebook' ? '📘 Facebook' : (d === 'whatsapp' ? '💬 WhatsApp' : String(d || '—')); }
+function dinamicaTxt(d){ return d === 'facebook' ? '📘 Facebook' : (d === 'tiktok' ? '🎵 TikTok' : (d === 'whatsapp' ? '💬 WhatsApp' : String(d || '—'))); }
 
 /* ========== [FIX-ENVIO 2026-11-17] REENVÍO MASIVO — los que ya se registraron y NO recibieron su BonüGift ==========
    Busca: (a) reclamos con envioPendiente:true, (b) clientes con dinámica declarada y SIN código.
@@ -1939,7 +1939,7 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
         const pendientes = [];
 
         const claimsSnap = await firestore.collection('bonugift_claims').where('envioPendiente', '==', true).limit(TOPE).get();
-        claimsSnap.forEach(d => { const x = d.data(); pendientes.push({ email: x.email, nombre: x.nombre || '', uid: x.uid || '', dinamica: ['facebook','whatsapp'].includes(x.dinamica) ? x.dinamica : 'facebook' }); });
+        claimsSnap.forEach(d => { const x = d.data(); pendientes.push({ email: x.email, nombre: x.nombre || '', uid: x.uid || '', dinamica: ['facebook','whatsapp','tiktok'].includes(x.dinamica) ? x.dinamica : 'facebook' }); });
 
         /* [TODOS-SIN-CODIGO 2026-11-17] modo TODOS: con {todos:true} en el body se incluye a
            TODO cliente registrado sin código, aunque nunca haya declarado dinámica (se registra
@@ -1958,10 +1958,10 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
             cliSnap.forEach(d => {
                 const c = d.data();
                 const pb = c.promoBonuGift || {};
-                const declara = pb.dinamica || (pb.fb ? 'facebook' : '') || (pb.whatsapp ? 'whatsapp' : '');
+                const declara = pb.dinamica || (pb.fb ? 'facebook' : '') || (pb.tiktok ? 'tiktok' : '') || (pb.whatsapp ? 'whatsapp' : '');
                 const aplica = modoTodos ? (!pb.codigo && c.email) : (declara && !pb.codigo && c.email);
                 if (aplica && !yaEnLista.has(String(c.email).toLowerCase()) && !conCodigoEntregado.has(String(c.email).toLowerCase())) {
-                    pendientes.push({ email: c.email, nombre: c.nombre || '', uid: d.id, dinamica: ['facebook','whatsapp'].includes(declara) ? declara : (modoTodos ? 'registro' : 'facebook') });
+                    pendientes.push({ email: c.email, nombre: c.nombre || '', uid: d.id, dinamica: ['facebook','whatsapp','tiktok'].includes(declara) ? declara : (modoTodos ? 'registro' : 'facebook') });
                 }
             });
         }
