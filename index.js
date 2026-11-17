@@ -2313,6 +2313,127 @@ app.post('/api/bonugift-activar-todas', giftEmailLimiter, verificarAdmin, async 
     }
 });
 
+/* ========== [SALDO-SERVIDOR 2026-11-18] EL SALDO LO LEE EL SERVIDOR ==========
+   Los clientes NO veían su saldo aunque el servidor ya lo hubiera acreditado:
+   la página leía clientes/{uid} desde el NAVEGADOR y las reglas de Firestore
+   bloqueaban esa lectura (el mismo problema que tenía el panel). Ahora la página
+   pide su saldo AQUÍ con su token: el servidor lo lee con Admin y responde siempre. */
+app.get('/api/bonugift-saldo', verificarAuthOpcional, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        if (!req.user || !req.user.uid) return res.status(401).json({ success: false, error: 'Inicia sesión para ver tu saldo' });
+        const s = await firestore.collection('clientes').doc(req.user.uid).get();
+        const d = s.exists ? (s.data() || {}) : {};
+        const codigo = (d.promoBonuGift || {}).codigo || null;
+        let estado = null;
+        if (codigo) {
+            const bg = await firestore.collection('bonugift').doc(String(codigo)).get().catch(() => null);
+            estado = bg && bg.exists ? ((bg.data() || {}).estado || null) : null;
+        }
+        res.json({ success: true, uid: req.user.uid, saldo: Number(d.cashbackBalance) || 0, codigo: codigo, estado: estado, promoBonuGift: d.promoBonuGift || null, likes: Array.isArray(d.likes) ? d.likes.slice(0, 50) : [] });
+    } catch (e) {
+        console.error('❌ Error bonugift-saldo:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/* ========== [ACTIVAR-CLIENTE 2026-11-18] BOTÓN «ACTIVAR BONÜGIFT» POR PERSONA ==========
+   La lista de registrados del panel tiene un botón por persona: el servidor busca
+   su código (cliente → reclamo → bonugift por correo) o CREA uno nuevo, lo deja
+   ACTIVADO y acredita el saldo UNA SOLA VEZ (transacción). Con esto ningún registro
+   se queda sin su BonüGift aunque todo lo demás haya fallado. Devuelve nombre,
+   correo y teléfono para que el panel abra WhatsApp con el mensaje listo. */
+app.post('/api/bonugift-activar-cliente', giftEmailLimiter, verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const b = req.body || {};
+        const uidQ = String(b.uid || '').trim().substring(0, 64);
+        const emailQ = String(b.email || '').trim().toLowerCase();
+        if (!uidQ && !emailQ) return res.status(400).json({ success: false, error: 'Falta el uid o el correo del cliente' });
+
+        /* 1) Documento del cliente: por uid, o buscándolo por correo */
+        let cliRef = null, cli = null;
+        if (uidQ) {
+            const s = await firestore.collection('clientes').doc(uidQ).get();
+            if (s.exists) { cliRef = s.ref; cli = s.data() || {}; }
+        }
+        if (!cli && emailQ) {
+            const q = await firestore.collection('clientes').where('email', '==', emailQ).limit(1).get();
+            if (!q.empty) { cliRef = q.docs[0].ref; cli = q.docs[0].data() || {}; }
+        }
+        /* 2) Su reclamo del registro (si existe) */
+        const claimId = emailQ ? emailQ.replace(/[^a-z0-9@._-]/g, '_') : (cli ? String(cli.email || '').toLowerCase().replace(/[^a-z0-9@._-]/g, '_') : null);
+        let claim = null;
+        if (claimId) {
+            const s = await firestore.collection('bonugift_claims').doc(claimId).get().catch(() => null);
+            claim = s && s.exists ? (s.data() || {}) : null;
+        }
+        const uidFinal = uidQ || (cliRef ? cliRef.id : null) || (claim && claim.uid) || null;
+        const emailFinal = emailQ || String((cli && cli.email) || (claim && claim.email) || '').toLowerCase();
+
+        /* 3) Su código: cliente → reclamo → bonugift por correo → crear uno nuevo */
+        let codigo = String((cli && (cli.promoBonuGift || {}).codigo) || (claim && claim.codigo) || '').toUpperCase() || null;
+        if (!codigo && emailFinal) {
+            const q = await firestore.collection('bonugift').where('reclamadoEmail', '==', emailFinal).limit(1).get().catch(() => null);
+            if (q && !q.empty) codigo = q.docs[0].id;
+        }
+        let creadoNuevo = false;
+        if (!codigo) {
+            for (let i = 0; i < 12; i++) {
+                const c = bonuGiftCodigoNavidad();
+                const ex = await firestore.collection('bonugift').doc(c).get();
+                if (!ex.exists) { codigo = c; creadoNuevo = true; break; }
+            }
+            if (!codigo) return res.status(500).json({ success: false, error: 'No se pudo generar un código nuevo, intenta de nuevo' });
+        }
+
+        /* 4) Activar + acreditar UNA sola vez (transacción server-side) */
+        const bgRef = firestore.collection('bonugift').doc(codigo);
+        const montoCred = 1000;
+        const ahoraISO = new Date().toISOString();
+        let activadoAhora = false;
+        await firestore.runTransaction(async (tx) => {
+            const re = await tx.get(bgRef);
+            const d2 = re.exists ? (re.data() || {}) : {};
+            const activarAhora = (d2.estado || '') !== 'activado';
+            const montoReal = Number(d2.monto) > 0 ? Number(d2.monto) : montoCred;
+            tx.set(bgRef, {
+                codigo: codigo, monto: montoReal, estado: 'activado',
+                lote: d2.lote || 'PROMO-NAVIDAD2026',
+                creadoEn: d2.creadoEn || ahoraISO,
+                activadoPor: d2.activadoPor || uidFinal || null,
+                activadoEmail: d2.activadoEmail || emailFinal || null,
+                activadoEn: d2.activadoEn || ahoraISO,
+                autoActivada: true,
+                dinamica: d2.dinamica || (claim && claim.dinamica) || 'registro',
+                reclamadoEmail: d2.reclamadoEmail || emailFinal || null,
+                rescatadoPor: (req.user && req.user.email) || 'admin', rescatadoEn: ahoraISO
+            }, { merge: true });
+            if (uidFinal) {
+                const cliUpd = { promoBonuGift: Object.assign({}, (cli && cli.promoBonuGift) || {}, { codigo: codigo, codigoEnviadoEn: ((cli && cli.promoBonuGift) || {}).codigoEnviadoEn || ahoraISO }) };
+                /* Crédito SOLO si esta pasada lo activó: si ya estaba 'activado', su saldo ya lo incluyen */
+                if (activarAhora) cliUpd.cashbackBalance = admin.firestore.FieldValue.increment(montoReal);
+                tx.set(firestore.collection('clientes').doc(uidFinal), cliUpd, { merge: true });
+            }
+            if (claimId) {
+                const claimUpd = { codigo: codigo, monto: montoReal, envioPendiente: false, rescatadoEn: ahoraISO };
+                if (activarAhora) { claimUpd.autoActivada = true; claimUpd.saldoAcreditado = montoReal; }
+                tx.set(firestore.collection('bonugift_claims').doc(claimId), claimUpd, { merge: true });
+            }
+            activadoAhora = activarAhora;
+        });
+        const nombre = (cli && cli.nombre) || (claim && claim.nombre) || '';
+        const telefono = (cli && cli.telefono) || (claim && claim.telefono) || '';
+        const saldoNuevo = Number((cli && cli.cashbackBalance) || 0) + (activadoAhora ? montoCred : 0);
+        waEnviarCallMeBot('⚡ BONÜGIFT ACTIVADA DESDE EL PANEL\n👤 ' + waSanitizar(nombre || 'Cliente', 60) + '\n📧 ' + waSanitizar(emailFinal, 60) + '\n💳 Código: ' + codigo + (creadoNuevo ? ' (NUEVO)' : '') + '\n✅ ' + (activadoAhora ? 'ACTIVADA ahora — saldo $1,000 acreditado' : 'Ya estaba activada (sin doble crédito)') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        console.log('⚡ activar-cliente ' + codigo + ' → ' + emailFinal + (activadoAhora ? ' (activada + saldo)' : ' (ya estaba)'));
+        res.json({ success: true, codigo: codigo, monto: montoCred, creadoNuevo: creadoNuevo, yaEstaba: !activadoAhora, activadoAhora: activadoAhora, nombre: nombre, email: emailFinal, telefono: telefono, saldo: saldoNuevo });
+    } catch (e) {
+        console.error('❌ Error bonugift-activar-cliente:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 /* Aviso admin (mensaje libre) — protegido con token de administrador */
 app.post('/api/whatsapp', waLimiter, verificarAdmin, async (req, res) => {
     try {
@@ -2344,6 +2465,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
+    version: 'ACTIVAR-CLIENTE 2026-11-18',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
