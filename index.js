@@ -1283,7 +1283,11 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             proveedor: prod.proveedor || 'Bonü',
             precioProveedor: parseFloat(prod.precioProveedor) || precioReal,
             /* SAGA 4: cashback promo publicado para este producto (7,8,10,12,15,18,20) si existe */
-            cashbackPromo: Math.min(CASHBACK_MAX_PRODUCTO, parseFloat(prod.cashbackPromo) || 0)
+            cashbackPromo: Math.min(CASHBACK_MAX_PRODUCTO, parseFloat(prod.cashbackPromo) || 0),
+            /* [BG-CHECKOUT 2026-11-18] TOPE BONÜGIFT: solo los productos con regalito 🎁 se pueden
+               pagar con saldo, y de cada uno solo su % publicado (pctBonuGift, default 20%). */
+            regalo: !!(prod.regalo),
+            pctBonuGift: Math.min(50, Math.max(5, parseInt(prod.pctBonuGift, 10) || 20))
         });
         
         subtotal += precioReal * cantidad;
@@ -1320,16 +1324,23 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
     let cashbackUsar = 0;
     let userCashbackBalance = 0;
     
+    /* [BG-CHECKOUT 2026-11-18] AQUÍ SE APLICA EL DESCUENTO DEL BONÜGIFT AL PAGAR:
+       el cliente elige cuánto saldo (Free Cash) usar con el slider del checkout y el servidor
+       lo valida y lo resta del total antes de cobrar con la pasarela (BonuPay/Stripe/PayPal/MP).
+       Tope BonüGift (server-side): solo productos con 🎁, máximo su % publicado por producto. */
+    const topeBonuGift = Math.round(validatedItems.reduce(
+        (s, i) => s + (i.regalo ? i.precioReal * i.cantidad * (i.pctBonuGift / 100) : 0), 0) * 100) / 100;
     if (userId && cashbackToUse > 0) {
         const userDoc = await firestore.collection('clientes').doc(userId).get();
         if (userDoc.exists) {
             userCashbackBalance = userDoc.data().cashbackBalance || 0;
             const maxPermitido = (subtotal - descuento) * 0.5;
-            cashbackUsar = Math.min(
-                parseFloat(cashbackToUse) || 0, 
-                userCashbackBalance, 
-                maxPermitido
-            );
+            cashbackUsar = Math.round(Math.min(
+                parseFloat(cashbackToUse) || 0,
+                userCashbackBalance,
+                maxPermitido,
+                topeBonuGift
+            ) * 100) / 100;
         }
     }
     
@@ -1357,6 +1368,7 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         cuponAplicado,
         cashbackUsar,
         userCashbackBalance,
+        topeBonuGift,
         envio,
         iva,
         total,
@@ -1379,6 +1391,9 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         success: true, 
         token, 
         total,
+        descuentoAplicado: Math.round(descuento * 100) / 100,
+        cashbackAplicado: cashbackUsar,
+        topeBonuGift: topeBonuGift,
         expiresAt: payload.exp
     });
 });
@@ -1941,10 +1956,10 @@ app.post('/api/bonugift-claim', claimGiftLimiter, async (req, res) => {
 });
 function dinamicaTxt(d){ return d === 'facebook' ? '📘 Facebook' : (d === 'tiktok' ? '🎵 TikTok' : (d === 'whatsapp' ? '💬 WhatsApp' : String(d || '—'))); }
 
-/* ========== [FIX-ENVIO 2026-11-17] REENVÍO MASIVO — los que ya se registraron y NO recibieron su BonüGift ==========
-   Busca: (a) reclamos con envioPendiente:true, (b) clientes con dinámica declarada y SIN código.
-   Les crea el código BG-XXXX-XXXX, lo guarda, lo asigna al cliente y envía el correo con reintentos.
-   Tanda máxima de 40 por clic (Alberto vuelve a dar clic si quedan más). */
+/* ========== [FIX-ENVIO 2026-11-17 + ATORADOS 2026-11-18] REENVÍO MASIVO ==========
+   Busca: (a) reclamos con envioPendiente:true (reusa SU código ya creado), (b) clientes SIN código.
+   Si el correo está apagado (EMAIL_PASS) NO se bloquea: crea/reusa los códigos igual y los deja
+   listos para mandarse por WhatsApp desde el panel → 🆘 Atorados. Tanda máxima de 40 por clic. */
 app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, async (req, res) => {
     try {
         if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
@@ -1952,7 +1967,21 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
         const pendientes = [];
 
         const claimsSnap = await firestore.collection('bonugift_claims').where('envioPendiente', '==', true).limit(TOPE).get();
-        claimsSnap.forEach(d => { const x = d.data(); pendientes.push({ email: x.email, nombre: x.nombre || '', uid: x.uid || '', dinamica: ['facebook','whatsapp','tiktok','registro'].includes(x.dinamica) ? x.dinamica : 'registro' }); });
+        /* [ATORADOS 2026-11-18] REUTILIZA el código que ya se creó en el registro (no genera duplicados)
+           y SALTA a quienes ya activaron su BonüGift (ellos ya tienen su saldo; no se les reenvía nada). */
+        for (const d of claimsSnap.docs) {
+            const x = d.data();
+            if (x.codigo) {
+                try {
+                    const bgDoc = await firestore.collection('bonugift').doc(x.codigo).get();
+                    if (bgDoc.exists && bgDoc.data().estado === 'activado') {
+                        await d.ref.set({ envioPendiente: false, resueltoEn: new Date().toISOString() }, { merge: true }).catch(() => {});
+                        continue;
+                    }
+                } catch (e) { console.warn('No se pudo leer bonugift ' + x.codigo + ' (sigo):', e.message); }
+            }
+            pendientes.push({ email: x.email, nombre: x.nombre || '', uid: x.uid || '', telefono: x.telefono || null, direccion: x.direccion || null, codigo: x.codigo || null, dinamica: ['facebook','whatsapp','tiktok','registro'].includes(x.dinamica) ? x.dinamica : 'registro' });
+        }
 
         /* [TODOS-SIN-CODIGO 2026-11-17] modo TODOS: con {todos:true} en el body se incluye a
            TODO cliente registrado sin código, aunque nunca haya declarado dinámica (se registra
@@ -1974,24 +2003,30 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
                 const declara = pb.dinamica || (pb.fb ? 'facebook' : '') || (pb.tiktok ? 'tiktok' : '') || (pb.whatsapp ? 'whatsapp' : '');
                 const aplica = modoTodos ? (!pb.codigo && c.email) : (declara && !pb.codigo && c.email);
                 if (aplica && !yaEnLista.has(String(c.email).toLowerCase()) && !conCodigoEntregado.has(String(c.email).toLowerCase())) {
-                    pendientes.push({ email: c.email, nombre: c.nombre || '', uid: d.id, dinamica: ['facebook','whatsapp','tiktok','registro'].includes(declara) ? declara : 'registro' });
+                    pendientes.push({ email: c.email, nombre: c.nombre || '', uid: d.id, telefono: c.telefono || null, direccion: typeof c.direccion === 'string' ? String(c.direccion).substring(0, 140) : null, codigo: null, dinamica: ['facebook','whatsapp','tiktok','registro'].includes(declara) ? declara : 'registro' });
                 }
             });
         }
 
         const total = pendientes.length;
         if (!total) return res.json({ success: true, modoTodos: modoTodos, procesados: 0, enviados: 0, fallidos: 0, restantes: 0, mensaje: modoTodos ? 'No hay ningún cliente sin código: todos ya tienen su BonüGift asignada.' : 'No hay registros pendientes: todos los que se registraron ya tienen su BonüGift.' });
-        if (!emailConfigurado || !emailTransporter) return res.status(500).json({ success: false, error: 'Email no configurado en el servidor (EMAIL_USER/EMAIL_PASS). Agrégalas en Render → Environment y vuelve a dar clic.', pendientesDetectados: total, modoTodos: modoTodos });
+        /* [ATORADOS 2026-11-18] El correo YA NO es requisito: aunque Gmail esté sin configurar (EMAIL_PASS),
+           los códigos se crean/reusan igual y quedan GUARDADOS para mandarse por WhatsApp desde
+           el panel → 🆘 Atorados. Solo si el correo está disponible se intenta el envío por email. */
+        const correoDisponible = !!(emailConfigurado && emailTransporter);
 
-        let enviados = 0, fallidos = 0;
+        let enviados = 0, fallidos = 0, preparados = 0;
         const detalles = [];
         for (const p of pendientes.slice(0, TOPE)) {
             try {
-                let codigo = null;
-                for (let i = 0; i < 12; i++) {
-                    const c = bonuGiftCodigoNavidad();
-                    const ex = await firestore.collection('bonugift').doc(c).get();
-                    if (!ex.exists) { codigo = c; break; }
+                /* Reusa el código del registro; solo genera uno nuevo si no tenía */
+                let codigo = p.codigo || null;
+                if (!codigo) {
+                    for (let i = 0; i < 12; i++) {
+                        const c = bonuGiftCodigoNavidad();
+                        const ex = await firestore.collection('bonugift').doc(c).get();
+                        if (!ex.exists) { codigo = c; break; }
+                    }
                 }
                 if (!codigo) { fallidos++; detalles.push({ email: p.email, error: 'no se pudo generar el código' }); continue; }
                 const montoTxt = formatCurrency(1000);
@@ -1999,23 +2034,31 @@ app.post('/api/bonugift-reenviar-pendientes', giftEmailLimiter, verificarAdmin, 
                     codigo: codigo, monto: 1000, estado: 'disponible', lote: 'PROMO-NAVIDAD2026',
                     creadoEn: new Date().toISOString(), activadoPor: null, activadoEmail: null, activadoEn: null,
                     dinamica: p.dinamica, reclamadoEmail: p.email, reenviadoPor: (req.user && req.user.email) || 'admin'
-                });
-                const cRef = firestore.collection('bonugift_claims').doc(String(p.email).replace(/[^a-z0-9@._-]/g, '_'));
-                await cRef.set({
-                    email: p.email, nombre: p.nombre, uid: p.uid || null, dinamica: p.dinamica,
-                    codigo: codigo, monto: 1000, fecha: new Date().toISOString(), envioPendiente: true,
-                    reenviadoEn: new Date().toISOString()
                 }, { merge: true });
+                const cRef = firestore.collection('bonugift_claims').doc(String(p.email).replace(/[^a-z0-9@._-]/g, '_'));
+                const claimData = {
+                    email: p.email, nombre: p.nombre, uid: p.uid || null, dinamica: p.dinamica,
+                    telefono: p.telefono || null, direccion: p.direccion || null,
+                    codigo: codigo, monto: 1000, envioPendiente: true,
+                    reenviadoEn: new Date().toISOString()
+                };
+                if (!p.codigo) claimData.fecha = new Date().toISOString();
+                await cRef.set(claimData, { merge: true });
                 if (p.uid) {
                     await firestore.collection('clientes').doc(p.uid).set({ promoBonuGift: { codigo: codigo, codigoEnviadoEn: new Date().toISOString() } }, { merge: true }).catch(() => {});
                 }
-                const r = await enviarEmailBonuGiftReintentos(p.email, codigo, montoTxt, (p.nombre || '').split(' ')[0]);
-                if (r.ok) { enviados++; await cRef.set({ envioPendiente: false }, { merge: true }).catch(() => {}); }
-                else { fallidos++; detalles.push({ email: p.email, codigo: codigo, error: r.error }); }
+                if (correoDisponible) {
+                    const r = await enviarEmailBonuGiftReintentos(p.email, codigo, montoTxt, (p.nombre || '').split(' ')[0]);
+                    if (r.ok) { enviados++; await cRef.set({ envioPendiente: false }, { merge: true }).catch(() => {}); }
+                    else { fallidos++; detalles.push({ email: p.email, codigo: codigo, error: r.error }); }
+                } else {
+                    preparados++;
+                    detalles.push({ email: p.email, codigo: codigo, error: 'Correo apagado (EMAIL_PASS) — mándalo por WhatsApp desde 🆘 Atorados' });
+                }
             } catch (e) { fallidos++; detalles.push({ email: p.email, error: e.message }); }
         }
-        waEnviarCallMeBot((modoTodos ? '👥 BONÜGIFT — ENVÍO A TODOS SIN CÓDIGO' : '📤 REENVÍO BONÜGIFT A PENDIENTES') + '\n✅ Enviadas: ' + enviados + '\n⚠️ Fallidas: ' + fallidos + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
-        res.json({ success: true, modoTodos: modoTodos, procesados: Math.min(total, TOPE), enviados: enviados, fallidos: fallidos, restantes: Math.max(0, total - Math.min(total, TOPE)), detalles: detalles });
+        waEnviarCallMeBot((modoTodos ? '👥 BONÜGIFT — ENVÍO A TODOS SIN CÓDIGO' : '📤 REENVÍO BONÜGIFT A PENDIENTES') + '\n✅ Correos enviados: ' + enviados + (preparados ? '\n🆘 Listos para WhatsApp: ' + preparados : '') + '\n⚠️ Fallidas: ' + fallidos + (correoDisponible ? '' : '\n📴 Correo apagado: códigos guardados, mándalos con 🆘 Atorados') + '\n🗓️ ' + new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })).catch(() => {});
+        res.json({ success: true, modoTodos: modoTodos, procesados: Math.min(total, TOPE), enviados: enviados, fallidos: fallidos, preparados: preparados, correoApagado: !correoDisponible, restantes: Math.max(0, total - Math.min(total, TOPE)), detalles: detalles });
     } catch (error) {
         console.error('❌ Error reenviar-pendientes:', error.message);
         res.status(500).json({ success: false, error: error.message });
