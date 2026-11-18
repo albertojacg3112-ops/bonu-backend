@@ -2465,7 +2465,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'ACTIVAR-CLIENTE 2026-11-18',
+    version: 'SHARE-IMG 2026-11-19',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
@@ -2560,7 +2560,10 @@ app.get('/api/products', async (req, res) => {
             const data = doc.data();
             // Optimizar imágenes con Cloudinary
             const optimizedData = getOptimizedProductImages(data);
-            productos.push({ id: doc.id, ...optimizedData });
+            /* [SHARE-IMG 2026-11-19] id REAL al final: algunos productos guardan un campo "id"
+               interno propio y antes lo tapaba el id verdadero del documento — con ese id falso
+               la vista previa al compartir no encontraba el producto y salía sin imagen. */
+            productos.push(Object.assign({}, optimizedData, { id: doc.id }));
         });
         
         if (search?.trim()) {
@@ -2585,7 +2588,16 @@ app.get('/api/products/:id', async (req, res) => {
     }
     
     try {
-        const productDoc = await firestore.collection('productos').doc(req.params.id).get();
+        /* [SHARE-IMG 2026-11-19] id real primero; si no existe, respaldo por el campo id interno */
+        let productDoc = await firestore.collection('productos').doc(req.params.id).get();
+        if (!productDoc.exists && /^\d+$/.test(String(req.params.id))) {
+            const altN = await firestore.collection('productos').where('id', '==', Number(req.params.id)).limit(1).get().catch(() => null);
+            if (altN && !altN.empty) productDoc = altN.docs[0];
+        }
+        if (!productDoc.exists) {
+            const altS = await firestore.collection('productos').where('id', '==', String(req.params.id)).limit(1).get().catch(() => null);
+            if (altS && !altS.empty) productDoc = altS.docs[0];
+        }
         
         if (!productDoc.exists) {
             return res.status(404).json({ success: false, error: 'Producto no encontrado' });
@@ -2596,7 +2608,7 @@ app.get('/api/products/:id', async (req, res) => {
         
         res.json({ 
             success: true, 
-            producto: { id: productDoc.id, ...optimizedData } 
+            producto: Object.assign({}, optimizedData, { id: productDoc.id }) 
         });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -4135,33 +4147,85 @@ app.post('/api/admin/set-role', verificarAdmin, async (req, res) => {
     }
 });
 
-/* ========== OPEN GRAPH ========== */
+/* ========== OPEN GRAPH [SHARE-IMG 2026-11-19] ==========
+   Vista previa al compartir: la IMAGEN DEL PRODUCTO sí sale en WhatsApp/Facebook/TikTok.
+   Por qué no salía (probado en producción con productos reales):
+   1) Los productos de vendedor guardan un campo "id" interno (número): el botón compartía
+      ESE número y el endpoint no encontraba el documento → WhatsApp solo veía el enlace.
+      Ahora si el id no es un documento, se busca por el campo id interno (respaldo).
+   2) Datos raros (descripcion de otro tipo, nombre nulo) tiraban un error y caían al
+      redirect de la home → sin vista previa. Ahora todo se convierte a texto seguro.
+   3) La imagen iba sin normalizar (http://, relativa) y sin optimizar. Ahora siempre
+      https absoluta y pasada por Cloudinary si está configurado (poca peso = WhatsApp
+      la descarga rápido y sí la muestra).
+   4) Etiquetas completas og:* + twitter:* + precio, HTML escapado y cache corto (10 min)
+      para que las correcciones se reflejen rápido en las redes. */
+function ogEsc(s) { return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+function ogImagenProducto(p) {
+    let im = '';
+    if (Array.isArray(p.imagenes) && p.imagenes.length) im = p.imagenes[0];
+    else if (typeof p.imagenes === 'string' && p.imagenes.trim()) im = p.imagenes;
+    else if (typeof p.imagen === 'string' && p.imagen.trim()) im = p.imagen;
+    else if (typeof p.imagenUrl === 'string' && p.imagenUrl.trim()) im = p.imagenUrl;
+    else if (typeof p.thumbnail === 'string' && p.thumbnail.trim()) im = p.thumbnail;
+    im = String(im || '').trim();
+    if (im.startsWith('//')) im = 'https:' + im;
+    else if (im.startsWith('/')) im = 'https://xn--bon-joa.com' + im;
+    else if (/^http:\/\//i.test(im)) im = 'https://' + im.slice(7);
+    if (!/^https:\/\/\S+$/i.test(im)) im = 'https://xn--bon-joa.com/og-image.jpg';
+    /* Cloudinary achica la imagen (f_auto,q_auto): WhatsApp descarta imágenes muy pesadas */
+    try { const opt = getOptimizedImageUrl(im, 800, 800); if (opt) im = opt; } catch (e) {}
+    return im;
+}
+async function ogBuscarProducto(idRaw) {
+    const id = String(idRaw || '').trim().substring(0, 150);
+    if (!id) return null;
+    /* 1) Documento directo (id real de Firestore) */
+    const direct = await firestore.collection('productos').doc(id).get();
+    if (direct.exists) return Object.assign({}, direct.data(), { id: direct.id });
+    /* 2) Respaldo: productos de vendedor con su propio campo id (número o texto) */
+    if (/^\d+$/.test(id)) {
+        const qN = await firestore.collection('productos').where('id', '==', Number(id)).limit(1).get().catch(() => null);
+        if (qN && !qN.empty) return Object.assign({}, qN.docs[0].data(), { id: qN.docs[0].id });
+    }
+    const qS = await firestore.collection('productos').where('id', '==', id).limit(1).get().catch(() => null);
+    if (qS && !qS.empty) return Object.assign({}, qS.docs[0].data(), { id: qS.docs[0].id });
+    return null;
+}
 app.get('/og/producto/:id', async (req, res) => {
-    if (!firestore) return res.redirect('https://xn--bon-joa.com');
-    
+    const SITE = 'https://xn--bon-joa.com';
+    if (!firestore) return res.redirect(SITE);
     try {
-        const productDoc = await firestore.collection('productos').doc(req.params.id).get();
-        
-        if (!productDoc.exists) return res.redirect('https://xn--bon-joa.com');
-        
-        const p = productDoc.data();
-        const imagen = p.imagenes?.[0] || 'https://xn--bon-joa.com/og-image.jpg';
-        const titulo = (p.nombre || 'Bonü Marketplace').replace(/"/g, '&quot;');
-        const descripcionRaw = p.descripcion?.substring(0, 160) || 'Compra en Bonü con cashback y envío gratis';
-        const descripcion = (p.precioFinal ? `$${p.precioFinal} MXN - ` : '') + descripcionRaw.replace(/"/g, '&quot;');
-        const url = `https://xn--bon-joa.com/producto/${req.params.id}`;
-        
-        res.set('Cache-Control', 'public, max-age=3600');
-        res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${titulo} | Bonü</title>
+        const p = await ogBuscarProducto(req.params.id);
+        if (!p) return res.redirect(SITE);
+        const nombre = ogEsc(String(p.nombre || 'Producto Bonü').replace(/\s+/g, ' ').trim().substring(0, 120) || 'Producto Bonü');
+        const precio = Number(p.precioFinal || p.precio || 0);
+        const descTxt = ogEsc(String(p.descripcion || '').replace(/\s+/g, ' ').trim().substring(0, 160));
+        const descripcion = (precio > 0 ? '$' + precio.toFixed(2) + ' MXN · ' : '') + (descTxt || 'Compra en Bonü con cashback y envío gratis');
+        const imagen = ogEsc(ogImagenProducto(p));
+        /* [SHARE-IMG 2026-11-19] el redirect lleva el id REAL del documento (p.id): así los enlaces
+           viejos compartidos con el id interno del vendedor aterrizan bien en la página del producto */
+        const url = SITE + '/producto/' + encodeURIComponent(String(p.id || req.params.id));
+        const metaPrecio = precio > 0 ? '\n        <meta property="product:price:amount" content="' + precio.toFixed(2) + '">\n        <meta property="product:price:currency" content="MXN">' : '';
+        res.set('Cache-Control', 'public, max-age=600');
+        res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${nombre} | Bonü</title>
         <meta property="og:type" content="product">
-        <meta property="og:title" content="${titulo}">
+        <meta property="og:site_name" content="Bonü.com">
+        <meta property="og:locale" content="es_MX">
+        <meta property="og:title" content="${nombre}">
         <meta property="og:description" content="${descripcion}">
         <meta property="og:image" content="${imagen}">
-        <meta property="og:url" content="${url}">
+        <meta property="og:image:alt" content="${nombre}">
+        <meta property="og:url" content="${url}">${metaPrecio}
         <meta name="twitter:card" content="summary_large_image">
-        </head><body><p>Redirigiendo...</p><script>window.location.href="${url}";</script></body></html>`);
-    } catch { 
-        res.redirect('https://xn--bon-joa.com'); 
+        <meta name="twitter:title" content="${nombre}">
+        <meta name="twitter:description" content="${descripcion}">
+        <meta name="twitter:image" content="${imagen}">
+        <meta http-equiv="refresh" content="2;url=${url}">
+        </head><body><p>Abriendo el producto en Bonü…</p><script>window.location.replace(${JSON.stringify(url)});</script></body></html>`);
+    } catch (e) {
+        console.error('❌ Error og/producto:', e.message);
+        res.redirect('https://xn--bon-joa.com');
     }
 });
 /* [FIX-OG 2026-11-17] Alias /p/:id — los enlaces viejos compartidos antes del fix siguen teniendo vista previa */
