@@ -2176,6 +2176,167 @@ app.get('/api/bonugift-atorados', verificarAdmin, async (req, res) => {
     }
 });
 
+/* ========== [LISTA-TODO 2026-11-19] CADA BONÜGIFT PARA EL PANEL ==========
+   El dueño del sitio pidió ver CADA BonüGift: las que se están activando (activadas,
+   con quién y cuándo) y las que NO SE ENTREGARON BIEN (ya tienen dueño pero siguen
+   'disponible' → el cliente las tiene pero su saldo NO funciona al pagar), más el
+   inventario sin dueño. Todo en UNA lista con botón de activar desde ahí. */
+app.get('/api/bonugift-codigos', verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const [bgSnap, claimsSnap, cliSnap] = await Promise.all([
+            firestore.collection('bonugift').limit(1000).get(),
+            firestore.collection('bonugift_claims').get(),
+            firestore.collection('clientes').limit(800).get()
+        ]);
+        /* Dueño por código: primero el reclamo del registro (tiene envioPendiente del correo),
+           después el doc de cliente si el reclamo no lo trajo */
+        const duenioPorCodigo = new Map();
+        claimsSnap.forEach(d => { const x = d.data() || {}; if (x.codigo) duenioPorCodigo.set(String(x.codigo).toUpperCase(), { nombre: x.nombre || '', email: x.email || '', telefono: x.telefono || '', uid: x.uid || '', envioPendiente: x.envioPendiente !== false, fecha: x.fecha || '' }); });
+        cliSnap.forEach(d => { const c = d.data() || {}; const cod = (c.promoBonuGift || {}).codigo; if (cod && !duenioPorCodigo.has(String(cod).toUpperCase())) duenioPorCodigo.set(String(cod).toUpperCase(), { nombre: c.nombre || '', email: c.email || '', telefono: c.telefono || '', uid: d.id, envioPendiente: true, fecha: c.fechaRegistro || '' }); });
+        const lista = [];
+        bgSnap.forEach(d => {
+            const x = d.data() || {};
+            const duenio = duenioPorCodigo.get(String(d.id).toUpperCase()) || null;
+            const activada = x.estado === 'activado';
+            const situacion = activada ? 'activada' : (duenio ? 'sin-entregar' : 'inventario');
+            lista.push({
+                codigo: d.id,
+                monto: Number(x.monto) || 0,
+                estado: x.estado || 'disponible',
+                duenio: duenio,
+                envioPendiente: duenio ? (duenio.envioPendiente !== false) : null,
+                activadoEmail: x.activadoEmail || null,
+                activadoEn: x.activadoEn || null,
+                lote: x.lote || '',
+                situacion: situacion,
+                fecha: x.activadoEn || (duenio && duenio.fecha) || ''
+            });
+        });
+        const ordenS = { 'sin-entregar': 0, 'activada': 1, 'inventario': 2 };
+        lista.sort((a, b) => (ordenS[a.situacion] - ordenS[b.situacion]) || String(b.fecha || '').localeCompare(String(a.fecha || '')));
+        res.json({
+            success: true,
+            total: lista.length,
+            activadas: lista.filter(x => x.situacion === 'activada').length,
+            sinEntregar: lista.filter(x => x.situacion === 'sin-entregar').length,
+            inventario: lista.filter(x => x.situacion === 'inventario').length,
+            lista: lista.slice(0, 600)
+        });
+    } catch (e) {
+        console.error('❌ Error bonugift-codigos:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/* ========== [MARKETING 2026-11-19] LISTAS DE CORREOS Y TELÉFONOS PARA CAMPAÑAS ==========
+   El dueño pidió: una lista con TODOS los correos con los que se registra la gente,
+   con casilla para marcar a quien ya le mandó (o le va a mandar) publicidad por
+   correo; y lo mismo con los teléfonos para sus campañas de WhatsApp.
+   Las casillas se GUARDAN en la base para que queden marcadas aunque recargue la
+   página o cambie de computadora: clientes.mkCorreo / clientes.mkWhatsapp, y para
+   reclamos de la promoción que no tienen doc de cliente → marketing_marcas/{email}. */
+app.get('/api/admin/marketing-contactos', verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const [cliSnap, claimsSnap, marcasSnap] = await Promise.all([
+            firestore.collection('clientes').limit(1000).get(),
+            firestore.collection('bonugift_claims').get(),
+            firestore.collection('marketing_marcas').get()
+        ]);
+        const marcas = {};
+        marcasSnap.forEach(d => { marcas[d.id] = d.data() || {}; });
+        const vistosEmail = new Set();
+        const contactos = [];
+        cliSnap.forEach(d => {
+            const c = d.data() || {};
+            const em = String(c.email || '').toLowerCase().trim();
+            if (em) vistosEmail.add(em);
+            contactos.push({
+                id: d.id,
+                fuente: 'cliente',
+                nombre: c.nombre || '',
+                email: em,
+                telefono: String(c.telefono || '').trim(),
+                fecha: c.fechaRegistro || c.fechaCreacion || '',
+                aceptaMarketing: c.aceptaMarketing !== false,
+                mkCorreo: !!c.mkCorreo,
+                mkWhatsapp: !!c.mkWhatsapp,
+                saldo: Number(c.cashbackBalance) || 0,
+                tieneGift: !!(c.promoBonuGift || {}).codigo
+            });
+        });
+        claimsSnap.forEach(d => {
+            const x = d.data() || {};
+            const em = String(x.email || '').toLowerCase().trim();
+            if (!em || vistosEmail.has(em)) return;
+            vistosEmail.add(em);
+            const m = marcas[em] || {};
+            contactos.push({
+                id: 'claim:' + em,
+                fuente: 'claim',
+                nombre: x.nombre || '',
+                email: em,
+                telefono: String(x.telefono || '').trim(),
+                fecha: x.fecha || '',
+                aceptaMarketing: true,
+                mkCorreo: !!m.mkCorreo,
+                mkWhatsapp: !!m.mkWhatsapp,
+                saldo: 0,
+                tieneGift: !!x.codigo
+            });
+        });
+        contactos.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
+        res.json({
+            success: true,
+            total: contactos.length,
+            conEmail: contactos.filter(c => c.email).length,
+            conTelefono: contactos.filter(c => c.telefono).length,
+            marcadosCorreo: contactos.filter(c => c.mkCorreo).length,
+            marcadosWhatsapp: contactos.filter(c => c.mkWhatsapp).length,
+            contactos: contactos.slice(0, 1200)
+        });
+    } catch (e) {
+        console.error('❌ Error marketing-contactos:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+app.post('/api/admin/marketing-marcar', giftEmailLimiter, verificarAdmin, async (req, res) => {
+    try {
+        if (!firestore) return res.status(500).json({ success: false, error: 'Base de datos no disponible en el servidor' });
+        const b = req.body || {};
+        const tipo = b.tipo === 'whatsapp' ? 'whatsapp' : 'correo';
+        const campo = tipo === 'whatsapp' ? 'mkWhatsapp' : 'mkCorreo';
+        const marcado = !!b.marcado;
+        const ids = Array.isArray(b.ids) ? b.ids.slice(0, 1200).map(x => String(x)) : (b.id ? [String(b.id)] : []);
+        if (!ids.length) return res.status(400).json({ success: false, error: 'Falta el id del contacto' });
+        const hoy = new Date().toISOString();
+        let actualizados = 0;
+        /* Firestore admite máx. 500 escrituras por lote: se hacen tandas de 400 */
+        for (let i = 0; i < ids.length; i += 400) {
+            const tanda = ids.slice(i, i + 400);
+            const batch = firestore.batch();
+            tanda.forEach(id => {
+                if (id.startsWith('claim:')) {
+                    const em = id.substring(6).toLowerCase().trim();
+                    if (!em) return;
+                    batch.set(firestore.collection('marketing_marcas').doc(em), { email: em, [campo]: marcado, mkActualizado: hoy }, { merge: true });
+                } else {
+                    batch.set(firestore.collection('clientes').doc(id), { [campo]: marcado, mkActualizado: hoy }, { merge: true });
+                }
+                actualizados++;
+            });
+            await batch.commit();
+        }
+        console.log(`📣 Marketing: ${marcado ? 'MARCADOS' : 'DESMARCADOS'} ${actualizados} contactos (${tipo})`);
+        res.json({ success: true, actualizados: actualizados, tipo: tipo, marcado: marcado });
+    } catch (e) {
+        console.error('❌ Error marketing-marcar:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 /* ========== [AUTO-TODO 2026-11-18] ACTIVACIÓN 100% EN EL SERVIDOR ==========
    CAUSA DE LAS 8 SIN ACTIVARSE: la activación de respaldo se hacía con una transacción
    DEL NAVEGADOR sobre `bonugift` y `clientes`, y las reglas de seguridad de Firestore
@@ -2465,7 +2626,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'SHARE-IMG 2026-11-19',
+    version: 'MARKETING 2026-11-19',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
