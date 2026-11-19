@@ -2626,7 +2626,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'MARKETING 2026-11-19',
+    version: 'SHARE-IMG2 2026-11-19',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
@@ -4334,6 +4334,22 @@ function ogImagenProducto(p) {
     else if (im.startsWith('/')) im = 'https://xn--bon-joa.com' + im;
     else if (/^http:\/\//i.test(im)) im = 'https://' + im.slice(7);
     if (!/^https:\/\/\S+$/i.test(im)) im = 'https://xn--bon-joa.com/og-image.jpg';
+    /* [SHARE-IMG2 2026-11-19] Imágenes pesadas: WhatsApp a veces omite la imagen si pesa mucho
+       (en el catálogo real: 53 de 429 pasan de 600KB — 42 de AliExpress y 11 de CJ — y WhatsApp
+       las salta en silencio). Los CDNs de los proveedores permiten pedir una versión reducida
+       SIN servicios externos ni dependencias nuevas. Verificado EN VIVO sobre el catálogo
+       completo: 177 alicdn con sufijo _640x640.jpg = 177 OK (0 errores, 87.9MB -> 36.2MB,
+       pesadas 42 -> 7) y cj con x-oss-process = todas OK (1196KB -> 131KB). */
+    try {
+        if (/ae01\.alicdn\.com\//i.test(im) && /\.(jpg|jpeg|png)(\?|$)/i.test(im) && !/_\d+x\d+\.(jpg|jpeg|png)/i.test(im)) {
+            /* AliExpress: conserva la extensión original y añade el sufijo de miniatura:
+               xxx.jpg -> xxx.jpg_640x640.jpg (xxx.png -> xxx.png_640x640.jpg) */
+            im = im.replace(/\.(jpg|jpeg|png)(\?|$)/i, function (m0, ext, q) { return '.' + ext + '_640x640.jpg' + (q || ''); });
+        } else if (/\.cjdropshipping\.com\//i.test(im) && !/x-oss-process=/i.test(im)) {
+            /* CJ Dropshipping (cf. y oss-cf.): buckets Alibaba OSS con procesamiento nativo */
+            im += (im.indexOf('?') === -1 ? '?' : '&') + 'x-oss-process=image/resize,w_640/quality,q_80';
+        }
+    } catch (e) {}
     /* Cloudinary achica la imagen (f_auto,q_auto): WhatsApp descarta imágenes muy pesadas */
     try { const opt = getOptimizedImageUrl(im, 800, 800); if (opt) im = opt; } catch (e) {}
     return im;
