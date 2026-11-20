@@ -1257,7 +1257,21 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
             });
         }
         
-        const precioReal = parseFloat(prod.precioFinal) || 0;
+        /* [VERSIONES-PRECIO 2026-11-20] precio de la VERSIÓN elegida (ej. 200 leds / 700 leds).
+           El precio SIEMPRE sale de Firestore, nunca del cliente (anti-manipulación). */
+        const versionPedida = typeof item.version === 'string' ? sanitize(item.version).trim().slice(0, 60) : '';
+        let precioReal = parseFloat(prod.precioFinal) || 0;
+        let nombreItem = prod.nombre;
+        if (versionPedida) {
+            const listaVp = Array.isArray(prod.variantesPrecio) ? prod.variantesPrecio : [];
+            const vOk = listaVp.find(v => v && typeof v.nombre === 'string' && v.nombre.trim().toLowerCase() === versionPedida.toLowerCase());
+            if (!vOk) {
+                return res.status(400).json({ success: false, error: `La versión "${versionPedida}" de "${prod.nombre}" ya no existe. Quita el producto del carrito y agrégalo de nuevo.` });
+            }
+            const precioVersion = parseFloat(vOk.precio) || 0;
+            if (precioVersion > 0) precioReal = precioVersion;
+            nombreItem = prod.nombre + ' — ' + versionPedida;
+        }
         
         if (precioReal <= 0) {
             return res.status(400).json({ 
@@ -1276,7 +1290,8 @@ app.post('/api/checkout', checkoutLimiter, async (req, res) => {
         
         validatedItems.push({
             id: item.id,
-            nombre: prod.nombre,
+            nombre: nombreItem,
+            version: versionPedida || null,
             cantidad: cantidad,
             precioReal: precioReal,
             costoEnvio: parseFloat(prod.costoEnvio) || 0,
@@ -2626,7 +2641,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'VISITAS-OWNER 2026-11-20',
+    version: 'VERSIONES-PRECIO 2026-11-20',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
