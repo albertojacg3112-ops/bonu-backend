@@ -2626,7 +2626,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'SHARE-IMG2 2026-11-19',
+    version: 'VISITAS-OWNER 2026-11-20',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
@@ -3169,22 +3169,52 @@ function traficoRegistrarVisita(){
     } catch (e) { /* nunca romper el tracking */ }
 }
 app.post('/api/tracking/visita', async (req, res) => {
-    const { pagina = '/', origen = 'directo', dispositivo = 'desktop' } = req.body;
+    const { pagina = '/', origen = 'directo', dispositivo = 'desktop', deviceId = '', excluido = false } = req.body;
     traficoRegistrarVisita();
     if (!firestore) return res.json({ success: true });
     
+    /* [VISITAS-OWNER 2026-11-20] detectar sesión ADMIN por el token: esas visitas son del
+       dueño y NO se cuentan. También se excluye si el dispositivo mandó excluido=true
+       (botón «🚫 Excluir ESTE dispositivo» del panel). */
+    let esAdminSesion = false;
     try {
+        const authHeader = req.headers.authorization;
+        if (authHeader?.startsWith('Bearer ')) {
+            const decoded = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+            esAdminSesion = decoded.admin === true;
+            if (!esAdminSesion) {
+                const adminDoc = await firestore.collection('admins').doc(decoded.uid).get();
+                esAdminSesion = adminDoc.exists;
+            }
+        }
+    } catch { esAdminSesion = false; }
+    const noCuenta = esAdminSesion || excluido === true || excluido === 'true' || excluido === 1;
+    
+    try {
+        const dvLimpio = String(deviceId || '').replace(/[^a-zA-Z0-9\-_]/g, '').slice(0, 48);
         await firestore.collection('trafico').add({ 
-            pagina, 
-            origen, 
-            dispositivo, 
+            pagina: String(pagina || '/').slice(0, 200), 
+            origen: String(origen || 'directo').slice(0, 40), 
+            dispositivo: String(dispositivo || 'desktop').slice(0, 20), 
+            deviceId: dvLimpio,
+            esAdmin: noCuenta,
             fecha: new Date().toISOString(), 
             ip: req.ip 
         });
-        res.json({ success: true });
     } catch { 
-        res.json({ success: true }); 
+        /* nunca romper el tracking */ 
     }
+    
+    /* [VISITAS-OWNER 2026-11-20] solo las visitas de las DEMÁS personas suman el contador */
+    if (!noCuenta) {
+        try {
+            await firestore.collection('config').doc('visitas').set({
+                count: admin.firestore.FieldValue.increment(1),
+                lastVisit: new Date().toISOString()
+            }, { merge: true });
+        } catch { /* si falla el contador, la visita igual quedó en trafico */ }
+    }
+    res.json({ success: true, contada: !noCuenta });
 });
 
 /* ========== ADMIN ENDPOINTS MEJORADOS ========== */
@@ -3902,21 +3932,50 @@ app.post('/api/admin/inventory/movement', verificarAdmin, async (req, res) => {
 
 // Admin endpoints existentes
 app.get('/api/admin/trafico', verificarAdmin, async (req, res) => {
-    if (!firestore) return res.json({ total: 0, hoy: 0, mes: 0 });
+    if (!firestore) return res.json({ total: 0, hoy: 0, mes: 0, unicos: 0 });
     
     try {
         const snap = await firestore.collection('trafico').get();
         const hoy = new Date().toISOString().split('T')[0];
         let total = 0, hoyCount = 0;
+        const dispositivosVistos = new Set();
         
         snap.forEach(doc => { 
+            const d = doc.data();
+            /* [VISITAS-OWNER 2026-11-20] las visitas del dueño (esAdmin) no cuentan en nada */
+            if (d.esAdmin === true) return;
             total++; 
-            if (doc.data().fecha?.startsWith(hoy)) hoyCount++; 
+            if (d.fecha?.startsWith(hoy)) hoyCount++; 
+            /* [VISITAS-UNICAS 2026-11-20] únicos = dispositivos distintos (deviceId);
+               si el registro no trae deviceId, cae a la IP como respaldo */
+            const dv = (d.deviceId || '').trim();
+            if (dv) dispositivosVistos.add(dv);
+            else if (d.ip) dispositivosVistos.add('ip:' + d.ip);
         });
         
-        res.json({ total, hoy: hoyCount, mes: total });
+        res.json({ total, hoy: hoyCount, mes: total, unicos: dispositivosVistos.size });
     } catch (error) { 
-        res.json({ total: 0, hoy: 0, mes: 0 }); 
+        res.json({ total: 0, hoy: 0, mes: 0, unicos: 0 }); 
+    }
+});
+
+/* [VISITAS-OWNER 2026-11-20] poner el contador de visitas en CERO y borrar el historial de trafico */
+app.post('/api/admin/reset-visitas', verificarAdmin, async (req, res) => {
+    if (!firestore) return res.status(500).json({ success: false, error: 'Firestore no disponible' });
+    try {
+        let borrados = 0;
+        for (;;) {
+            const snap = await firestore.collection('trafico').limit(400).get();
+            if (snap.empty) break;
+            const batch = firestore.batch();
+            snap.forEach(doc => batch.delete(doc.ref));
+            await batch.commit();
+            borrados += snap.size;
+        }
+        await firestore.collection('config').doc('visitas').set({ count: 0, lastVisit: new Date().toISOString() }, { merge: true });
+        res.json({ success: true, borrados, count: 0 });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
