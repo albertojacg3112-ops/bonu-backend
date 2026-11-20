@@ -2641,7 +2641,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'SHARE-IMG3 2026-11-21',
+    version: 'SHARE-IMG4 2026-11-21',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
@@ -4453,17 +4453,17 @@ app.get('/og/producto/:id', async (req, res) => {
         const precio = Number(p.precioFinal || p.precio || 0);
         const descTxt = ogEsc(String(p.descripcion || '').replace(/\s+/g, ' ').trim().substring(0, 160));
         const descripcion = (precio > 0 ? '$' + precio.toFixed(2) + ' MXN · ' : '') + (descTxt || 'Compra en Bonü con cashback y envío gratis');
-        /* [SHARE-IMG3 2026-11-21] CAUSA RAÍZ ENCONTRADA Y VERIFICADA EN VIVO:
-           AliExpress (ae01.alicdn.com) sirve TODAS sus imágenes en formato WebP
-           (probado: la URL .jpg responde "Content-Type: image/webp" aunque pidas JPEG,
-           con cualquier User-Agent) y WhatsApp NO muestra WebP en las vistas previas
-           de enlaces -> por eso el título y precio salían pero la imagen NUNCA.
-           Solución: la imagen pasa por wsrv.nl (servicio público de conversión de
-           imágenes, gratuito, sin registro, muy usado) que la entrega como JPEG 640x640
-           real que WhatsApp sí muestra. Probado en vivo: alicdn webp 86KB -> wsrv JPEG 81KB. */
-        const imgOg = ogImagenProducto(p);
-        const imagenJpg = /^https:\/\//i.test(imgOg) ? 'https://wsrv.nl/?url=' + encodeURIComponent(imgOg) + '&w=640&output=jpg&we' : imgOg;
-        const imagen = ogEsc(imagenJpg);
+        /* [SHARE-IMG3 2026-11-21] CAUSA RAÍZ (verificada en vivo): AliExpress sirve TODAS sus
+           imágenes en formato WebP y WhatsApp NO muestra WebP en las vistas previas de enlaces
+           -> por eso el título y precio salían pero la imagen NUNCA.
+           [SHARE-IMG4 2026-11-21] La imagen AHORA la sirve este MISMO backend en /img-p/…:
+           WhatsApp le pide la imagen a bonu-backend.onrender.com (dominio que YA le funciona,
+           es de donde leyó título y precio). El backend la pide al conversor wsrv.nl
+           (AliExpress WebP -> JPEG 640x640 real) y la ENTREGA ya convertida.
+           Antes WhatsApp iba DIRECTO al conversor y ahí se podía atorar: wsrv.nl tiene
+           protección anti-bots (Cloudflare) que puede rechazar al rastreador de WhatsApp.
+           Además la URL queda limpia, sin signos &, y con cache de 24 h. */
+        const imagen = ogEsc('https://bonu-backend.onrender.com/img-p/' + encodeURIComponent(String(p.id || req.params.id)) + '.jpg');
         /* [SHARE-IMG 2026-11-19] el redirect lleva el id REAL del documento (p.id): así los enlaces
            viejos compartidos con el id interno del vendedor aterrizan bien en la página del producto.
            [SHARE-IMG3 2026-11-21] Además se quitaron 2 etiquetas que ROMPÍAN la vista previa:
@@ -4497,6 +4497,45 @@ app.get('/og/producto/:id', async (req, res) => {
 });
 /* [FIX-OG 2026-11-17] Alias /p/:id — los enlaces viejos compartidos antes del fix siguen teniendo vista previa */
 app.get('/p/:id', (req, res) => res.redirect(301, `/og/producto/${encodeURIComponent(req.params.id)}`));
+
+/* ========== [SHARE-IMG4 2026-11-21] IMAGEN DE PRODUCTO SERVIDA POR EL PROPIO BACKEND ========== *
+ * WhatsApp ya llega bien a bonu-backend.onrender.com (leyó título y precio desde siempre).
+ * Antes la imagen venía de un dominio ajeno (conversor) y podía ser rechazada por su
+ * protección anti-bots. Ahora: WhatsApp pide la imagen AQUÍ, este backend la pide al
+ * conversor (AliExpress WebP -> JPEG 640x640) y la entrega YA convertida.
+ * Cache en memoria 6 h (respuesta casi instantánea) + cache para WhatsApp 24 h.
+ * Si algo falla, entrega el logo de Bonü (JPEG, rápido, siempre disponible). */
+const _imgP = new Map(); /* id -> { buf, ts } */
+app.get('/img-p/:archivo', async (req, res) => {
+    const id = String(req.params.archivo || '').replace(/\.jpe?g$/i, '').substring(0, 150);
+    const LOGO = 'https://xn--bon-joa.com/og-image.jpg';
+    try {
+        const c = _imgP.get(id);
+        if (c && (Date.now() - c.ts) < 6 * 3600 * 1000) {
+            res.set('Content-Type', 'image/jpeg');
+            res.set('Cache-Control', 'public, max-age=86400');
+            return res.send(c.buf);
+        }
+        const p = await ogBuscarProducto(id);
+        const imgOg = p ? ogImagenProducto(p) : '';
+        const destino = /^https:\/\//i.test(imgOg) ? 'https://wsrv.nl/?url=' + encodeURIComponent(imgOg) + '&w=640&output=jpg&we' : LOGO;
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 15000);
+        const r = await fetch(destino, { signal: ctl.signal });
+        clearTimeout(t);
+        if (!r.ok) throw new Error('conversor HTTP ' + r.status);
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (!buf.length || buf.length > 5 * 1024 * 1024) throw new Error('imagen con peso raro');
+        if (_imgP.size > 120) _imgP.delete(_imgP.keys().next().value);
+        _imgP.set(id, { buf, ts: Date.now() });
+        res.set('Content-Type', 'image/jpeg');
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.send(buf);
+    } catch (e) {
+        console.error('❌ img-p ' + id + ':', e.message);
+        return res.redirect(302, LOGO);
+    }
+});
 /* ========== ALIEXPRESS DROPSHIPPING (API REAL) ========== */
 const AE_KEY = process.env.ALIEXPRESS_APP_KEY || '';
 const AE_SECRET = process.env.ALIEXPRESS_APP_SECRET || '';
