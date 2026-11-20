@@ -2641,7 +2641,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'VERSIONES-PRECIO 2026-11-20',
+    version: 'SHARE-IMG3 2026-11-21',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
@@ -4453,9 +4453,25 @@ app.get('/og/producto/:id', async (req, res) => {
         const precio = Number(p.precioFinal || p.precio || 0);
         const descTxt = ogEsc(String(p.descripcion || '').replace(/\s+/g, ' ').trim().substring(0, 160));
         const descripcion = (precio > 0 ? '$' + precio.toFixed(2) + ' MXN · ' : '') + (descTxt || 'Compra en Bonü con cashback y envío gratis');
-        const imagen = ogEsc(ogImagenProducto(p));
+        /* [SHARE-IMG3 2026-11-21] CAUSA RAÍZ ENCONTRADA Y VERIFICADA EN VIVO:
+           AliExpress (ae01.alicdn.com) sirve TODAS sus imágenes en formato WebP
+           (probado: la URL .jpg responde "Content-Type: image/webp" aunque pidas JPEG,
+           con cualquier User-Agent) y WhatsApp NO muestra WebP en las vistas previas
+           de enlaces -> por eso el título y precio salían pero la imagen NUNCA.
+           Solución: la imagen pasa por wsrv.nl (servicio público de conversión de
+           imágenes, gratuito, sin registro, muy usado) que la entrega como JPEG 640x640
+           real que WhatsApp sí muestra. Probado en vivo: alicdn webp 86KB -> wsrv JPEG 81KB. */
+        const imgOg = ogImagenProducto(p);
+        const imagenJpg = /^https:\/\//i.test(imgOg) ? 'https://wsrv.nl/?url=' + encodeURIComponent(imgOg) + '&w=640&output=jpg&we' : imgOg;
+        const imagen = ogEsc(imagenJpg);
         /* [SHARE-IMG 2026-11-19] el redirect lleva el id REAL del documento (p.id): así los enlaces
-           viejos compartidos con el id interno del vendedor aterrizan bien en la página del producto */
+           viejos compartidos con el id interno del vendedor aterrizan bien en la página del producto.
+           [SHARE-IMG3 2026-11-21] Además se quitaron 2 etiquetas que ROMPÍAN la vista previa:
+           1) <meta http-equiv="refresh">: el rastreador de WhatsApp/Facebook SIGUE ese refresh y
+              terminaba leyendo la página genérica de la tienda (que no tiene la imagen del producto).
+           2) og:url apuntaba a esa misma página genérica y el rastreador re-rastrea la "canónica".
+              Sin og:url, la vista previa usa los datos de ESTA página (los correctos).
+           Para las personas sigue igual: el JavaScript las manda a la página del producto. */
         const url = SITE + '/producto/' + encodeURIComponent(String(p.id || req.params.id));
         const metaPrecio = precio > 0 ? '\n        <meta property="product:price:amount" content="' + precio.toFixed(2) + '">\n        <meta property="product:price:currency" content="MXN">' : '';
         res.set('Cache-Control', 'public, max-age=600');
@@ -4466,13 +4482,13 @@ app.get('/og/producto/:id', async (req, res) => {
         <meta property="og:title" content="${nombre}">
         <meta property="og:description" content="${descripcion}">
         <meta property="og:image" content="${imagen}">
-        <meta property="og:image:alt" content="${nombre}">
-        <meta property="og:url" content="${url}">${metaPrecio}
+        <meta property="og:image:width" content="640">
+        <meta property="og:image:height" content="640">
+        <meta property="og:image:alt" content="${nombre}">${metaPrecio}
         <meta name="twitter:card" content="summary_large_image">
         <meta name="twitter:title" content="${nombre}">
         <meta name="twitter:description" content="${descripcion}">
         <meta name="twitter:image" content="${imagen}">
-        <meta http-equiv="refresh" content="2;url=${url}">
         </head><body><p>Abriendo el producto en Bonü…</p><script>window.location.replace(${JSON.stringify(url)});</script></body></html>`);
     } catch (e) {
         console.error('❌ Error og/producto:', e.message);
