@@ -2641,7 +2641,7 @@ app.post('/api/notify-register', waLimiter, async (req, res) => {
 
 app.get('/api/status', (req, res) => res.json({
     success: true,
-    version: 'SHARE-IMG4 2026-11-21',
+    version: 'SHARE-IMG5 2026-11-21',
     firestore: !!firestore,
     email: emailConfigurado,
     whatsapp: waConfigurado,
@@ -4463,7 +4463,12 @@ app.get('/og/producto/:id', async (req, res) => {
            Antes WhatsApp iba DIRECTO al conversor y ahí se podía atorar: wsrv.nl tiene
            protección anti-bots (Cloudflare) que puede rechazar al rastreador de WhatsApp.
            Además la URL queda limpia, sin signos &, y con cache de 24 h. */
-        const imagen = ogEsc('https://bonu-backend.onrender.com/img-p/' + encodeURIComponent(String(p.id || req.params.id)) + '.jpg');
+        /* [SHARE-IMG5 2026-11-21] El sufijo ?k=SI5 hace que la URL de la imagen sea NUEVA
+           para WhatsApp aunque la página ya se haya compartido antes: WhatsApp guarda en
+           memoria el resultado de cada URL que ya rastreó (imagen incluida); con el
+           sufijo, ninguna caché vieja puede tapar la imagen. El backend ignora ese
+           parámetro: sirve la misma imagen JPEG 640x640 igual de rápido. */
+        const imagen = ogEsc('https://bonu-backend.onrender.com/img-p/' + encodeURIComponent(String(p.id || req.params.id)) + '.jpg?k=SI5');
         /* [SHARE-IMG 2026-11-19] el redirect lleva el id REAL del documento (p.id): así los enlaces
            viejos compartidos con el id interno del vendedor aterrizan bien en la página del producto.
            [SHARE-IMG3 2026-11-21] Además se quitaron 2 etiquetas que ROMPÍAN la vista previa:
